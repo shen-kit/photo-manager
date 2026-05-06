@@ -1,9 +1,18 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request
 
 from app.api.v1.router import api_v1_router
+from app.core.database import create_db_and_tables
 
 
-app = FastAPI(title="Photo Manager API")
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    create_db_and_tables()
+    yield
+
+
+app = FastAPI(title="Photo Manager API", lifespan=lifespan)
 app.include_router(api_v1_router, prefix="/api/v1")
 
 

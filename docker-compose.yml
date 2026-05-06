@@ -31,8 +31,11 @@ services:
     depends_on:
       - db
       - redis
+    env_file:
+      - ./.env
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-photo_manager}:${POSTGRES_PASSWORD:-photo_manager}@db:5432/${POSTGRES_DB:-photo_manager}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-photo_manager}:${POSTGRES_PASSWORD:-photo_manager}@db:5432/${POSTGRES_DB:-photo_manager}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
       REDIS_URL: redis://redis:6379/0
       AI_CACHE_DIR: /cache/ai
       MEDIA_ORIGINALS_DIR: /media/originals
@@ -66,8 +69,11 @@ services:
     depends_on:
       - db
       - redis
+    env_file:
+      - ./.env
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-photo_manager}:${POSTGRES_PASSWORD:-photo_manager}@db:5432/${POSTGRES_DB:-photo_manager}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-photo_manager}:${POSTGRES_PASSWORD:-photo_manager}@db:5432/${POSTGRES_DB:-photo_manager}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
       REDIS_URL: redis://redis:6379/0
       AI_CACHE_DIR: /cache/ai
       MEDIA_ORIGINALS_DIR: /media/originals
