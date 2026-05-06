@@ -1,0 +1,80 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: photo-manager-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-photo_manager}
+      POSTGRES_USER: ${POSTGRES_USER:-photo_manager}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-photo_manager}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - ./data/db:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    container_name: photo-manager-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1000"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - ./data/redis:/data
+
+  api:
+    build:
+      context: ./backend
+    container_name: photo-manager-api
+    restart: unless-stopped
+    depends_on:
+      - db
+      - redis
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-photo_manager}:${POSTGRES_PASSWORD:-photo_manager}@db:5432/${POSTGRES_DB:-photo_manager}
+      REDIS_URL: redis://redis:6379/0
+      AI_CACHE_DIR: /cache/ai
+      MEDIA_ORIGINALS_DIR: /media/originals
+      MEDIA_PROCESSED_DIR: /media/processed
+      TRUSTED_PROXY_HEADERS: "true"
+    command:
+      [
+        "uvicorn",
+        "app.main:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8000",
+        "--reload",
+        "--proxy-headers",
+        "--forwarded-allow-ips=*"
+      ]
+    ports:
+      - "${API_PORT:-8000}:8000"
+    volumes:
+      - ./backend:/app
+      - ./data/ai_cache:/cache/ai
+      - ./storage/originals:/media/originals:ro
+      - ./storage/processed:/media/processed
+
+  worker:
+    build:
+      context: ./backend
+    container_name: photo-manager-worker
+    restart: unless-stopped
+    depends_on:
+      - db
+      - redis
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-photo_manager}:${POSTGRES_PASSWORD:-photo_manager}@db:5432/${POSTGRES_DB:-photo_manager}
+      REDIS_URL: redis://redis:6379/0
+      AI_CACHE_DIR: /cache/ai
+      MEDIA_ORIGINALS_DIR: /media/originals
+      MEDIA_PROCESSED_DIR: /media/processed
+    command: ["python", "worker.py"]
+    volumes:
+      - ./backend:/app
+      - ./data/ai_cache:/cache/ai
+      - ./storage/originals:/media/originals:ro
+      - ./storage/processed:/media/processed

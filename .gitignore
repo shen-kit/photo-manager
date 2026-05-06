@@ -1,0 +1,46 @@
+# Environment
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.venv/
+venv/
+
+# Node / frontend
+node_modules/
+dist/
+.vite/
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Application state: keep directory shape, ignore contents
+data/*
+!data/db/
+!data/redis/
+!data/ai_cache/
+data/db/*
+!data/db/.gitkeep
+data/redis/*
+!data/redis/.gitkeep
+data/ai_cache/*
+!data/ai_cache/.gitkeep
+
+storage/*
+!storage/originals/
+!storage/processed/
+storage/originals/*
+!storage/originals/.gitkeep
+storage/processed/*
+!storage/processed/.gitkeep
