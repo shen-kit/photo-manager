@@ -1,23 +1,21 @@
 from __future__ import annotations
 
 import os
-import time
 
-from redis import Redis
+from arq import run_worker
+from arq.connections import RedisSettings
+
+from app.services.assets_jobs import process_asset_metadata
+
+
+class WorkerSettings:
+    functions = [process_asset_metadata]
+    redis_settings = RedisSettings.from_dsn(os.getenv("REDIS_URL", "redis://redis:6379/0"))
+    queue_name = "arq:queue"
 
 
 def main() -> None:
-    redis_url = os.getenv("REDIS_URL", "redis://redis:6379/0")
-    worker_name = os.getenv("WORKER_NAME", "default")
-    client = Redis.from_url(redis_url)
-
-    while True:
-        try:
-            client.ping()
-            print(f"[worker:{worker_name}] idle, redis reachable")
-        except Exception as exc:  # pragma: no cover - bootstrap logging only
-            print(f"[worker:{worker_name}] redis unavailable: {exc}")
-        time.sleep(10)
+    run_worker(WorkerSettings)
 
 
 if __name__ == "__main__":

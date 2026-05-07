@@ -60,9 +60,23 @@ class Asset(SQLModel, table=True):
         default=None,
         sa_column=Column(DateTime(timezone=True), nullable=True),
     )
+    captured_at_local: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
+    description: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
+    is_favorite: bool = Field(
+        default=False,
+        sa_column=Column(Boolean, nullable=False, server_default="false"),
+    )
     width: int | None = Field(default=None, sa_column=Column(Integer, nullable=True))
     height: int | None = Field(default=None, sa_column=Column(Integer, nullable=True))
+    has_large_preview: bool = Field(
+        default=False,
+        sa_column=Column(Boolean, nullable=False, server_default="false"),
+    )
     file_size_bytes: int | None = Field(default=None, sa_column=Column(BigInteger, nullable=True))
+    exif_data: dict[str, Any] | None = Field(
+        default=None,
+        sa_column=Column(JSONB, nullable=True),
+    )
     search_vector: list[float] | None = Field(
         default=None,
         sa_column=Column(Vector(512), nullable=True),
@@ -75,6 +89,10 @@ class Asset(SQLModel, table=True):
     created_at: datetime = Field(
         default_factory=utc_now,
         sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+    deleted_at: datetime | None = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
     )
 
 

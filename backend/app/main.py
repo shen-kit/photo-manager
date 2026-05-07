@@ -1,19 +1,26 @@
 from contextlib import asynccontextmanager
+import os
+from pathlib import Path
 
 from fastapi import FastAPI, Request
+from fastapi.staticfiles import StaticFiles
 
 from app.api.v1.router import api_v1_router
 from app.core.database import create_db_and_tables
+
+MEDIA_PROCESSED_DIR = Path(os.getenv("MEDIA_PROCESSED_DIR", "/media/processed"))
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     create_db_and_tables()
+    MEDIA_PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
     yield
 
 
 app = FastAPI(title="Photo Manager API", lifespan=lifespan)
 app.include_router(api_v1_router, prefix="/api/v1")
+app.mount("/media/processed", StaticFiles(directory=MEDIA_PROCESSED_DIR), name="processed-media")
 
 
 @app.get("/health")
