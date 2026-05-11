@@ -22,7 +22,6 @@ from app.models import Asset, AssetTag, Face, Person, Tag, User
 from app.services.assets_media import (
     MEDIA_ORIGINALS_DIR,
     build_fast_variants,
-    processed_asset_dir,
     should_generate_large_preview,
     should_generate_small_in_api,
     validate_supported_image,
@@ -62,6 +61,7 @@ class AssetCollectionItem(SQLModel):
     height: int | None = None
     has_large_preview: bool
     small_thumbnail_url: str
+    blurhash: str | None = None
     tags: list[TagSummary] = Field(default_factory=list)
     faces: list[FaceSummary] = Field(default_factory=list)
 
@@ -160,8 +160,14 @@ def _thumbnail_url(request: Request, asset_id: UUID, variant: str) -> str:
     return str(request.base_url).rstrip("/") + f"/media/processed/assets/{asset_id}/{variant}.webp"
 
 
-def _processed_asset_dir(asset_id: UUID) -> Path:
-    return processed_asset_dir(asset_id)
+def _original_asset_url(request: Request, master_path: str) -> str:
+    return str(request.base_url).rstrip("/") + f"/media/originals/{master_path.lstrip('/')}"
+
+
+def _detail_image_url(request: Request, asset: Asset) -> str:
+    if asset.has_large_preview:
+        return _thumbnail_url(request, asset.id, "large")
+    return _original_asset_url(request, asset.master_path)
 
 
 def _active_asset_where() -> Any:
@@ -372,7 +378,7 @@ async def ingest_asset(
         has_large_preview=asset.has_large_preview,
         tiny_thumbnail_url=_thumbnail_url(request, asset.id, "tiny"),
         small_thumbnail_url=_thumbnail_url(request, asset.id, "small"),
-        large_preview_url=_thumbnail_url(request, asset.id, "large"),
+        large_preview_url=_detail_image_url(request, asset),
         blurhash=asset.blurhash,
         queued_job=queued_job,
     )
@@ -418,6 +424,7 @@ def list_assets(
             height=asset.height,
             has_large_preview=asset.has_large_preview,
             small_thumbnail_url=_thumbnail_url(request, asset.id, "small"),
+            blurhash=asset.blurhash,
             tags=_build_tag_models(tags),
             faces=_build_face_models(faces),
         )
@@ -468,7 +475,7 @@ def get_asset(
         tags=_build_tag_models(tags),
         people=_build_people_models(faces),
         faces=_build_face_models(faces),
-        large_preview_url=_thumbnail_url(request, asset.id, "large"),
+        large_preview_url=_detail_image_url(request, asset),
         created_at=asset.created_at,
     )
 
