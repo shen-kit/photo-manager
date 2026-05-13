@@ -1,35 +1,25 @@
 from __future__ import annotations
 
-import hashlib
-import imghdr
-import logging
-import mimetypes
-import os
-import shutil
 from datetime import datetime, timezone
+import os
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
+import aiofiles
 from arq.connections import RedisSettings, create_pool
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Request, Response, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile, status
 from sqlalchemy import func
-from sqlmodel import Field, Session, SQLModel, select
+from sqlmodel import Field, SQLModel, Session, select
 
 from app.core.auth import get_current_user
-from app.core.database import engine, get_session
+from app.core.database import get_session
 from app.models import Asset, AssetTag, Face, Person, Tag, User
-from app.services.assets_media import (
-    MEDIA_ORIGINALS_DIR,
-    build_fast_variants,
-    should_generate_large_preview,
-    should_generate_small_in_api,
-    validate_supported_image,
-)
+from app.services.asset_service import AssetService, active_asset_where, get_asset_service
+from app.services.assets_media import MEDIA_ORIGINALS_DIR
 
 router = APIRouter()
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
-logger = logging.getLogger(__name__)
 
 
 class AssetIngestPathRequest(SQLModel):
@@ -116,44 +106,10 @@ class AssetUpdateRequest(SQLModel):
     is_favorite: bool | None = None
 
 
-def _coerce_relative_path(raw_path: str) -> str:
-    candidate = Path(raw_path)
-    if candidate.is_absolute():
-        try:
-            relative = candidate.resolve().relative_to(MEDIA_ORIGINALS_DIR)
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Absolute file paths must resolve within the originals library root",
-            ) from exc
-    else:
-        relative = candidate
-
-    normalized = Path(str(relative)).as_posix().lstrip("/")
-    if normalized.startswith("../") or normalized == "..":
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File path must stay within the library root")
-    return normalized
-
-
-def _resolve_original_path(relative_path: str) -> Path:
-    resolved = (MEDIA_ORIGINALS_DIR / relative_path).resolve()
-    try:
-        resolved.relative_to(MEDIA_ORIGINALS_DIR)
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Resolved file path escapes the library root") from exc
-    if not resolved.is_file():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Original file was not found")
-    return resolved
-
-
-def _guess_mime_type(path: Path, uploaded_content_type: str | None = None) -> str:
-    if uploaded_content_type:
-        return uploaded_content_type
-    guessed, _ = mimetypes.guess_type(path.name)
-    if guessed:
-        return guessed
-    detected = imghdr.what(path)
-    return f"image/{detected}" if detected else "application/octet-stream"
+class AssetScanResponse(SQLModel):
+    scanned_files: int
+    already_ingested: int
+    enqueued_jobs: int
 
 
 def _thumbnail_url(request: Request, asset_id: UUID, variant: str) -> str:
@@ -170,70 +126,56 @@ def _detail_image_url(request: Request, asset: Asset) -> str:
     return _original_asset_url(request, asset.master_path)
 
 
-def _active_asset_where() -> Any:
-    return Asset.deleted_at.is_(None)
-
-
 def _get_active_asset(session: Session, asset_id: UUID) -> Asset:
-    asset = session.exec(select(Asset).where(Asset.id == asset_id, _active_asset_where())).first()
+    asset = session.exec(select(Asset).where(Asset.id == asset_id, active_asset_where())).first()
     if asset is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Asset not found")
     return asset
 
 
-def _save_uploaded_file(upload: UploadFile) -> tuple[str, Path]:
+async def _save_upload_to_originals(upload: UploadFile) -> Path:
     filename = Path(upload.filename or f"{uuid4().hex}.bin")
     suffix = filename.suffix.lower()
     now = datetime.now(timezone.utc)
     relative_path = Path("uploads") / now.strftime("%Y") / now.strftime("%m") / f"{uuid4().hex}{suffix}"
     destination = (MEDIA_ORIGINALS_DIR / relative_path).resolve()
+
+    try:
+        destination.relative_to(MEDIA_ORIGINALS_DIR)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Upload destination escaped the originals root") from exc
+
     destination.parent.mkdir(parents=True, exist_ok=True)
 
     try:
-        with destination.open("wb") as target:
-            upload.file.seek(0)
-            shutil.copyfileobj(upload.file, target)
+        await upload.seek(0)
+        async with aiofiles.open(destination, "wb") as target:
+            while chunk := await upload.read(1024 * 1024):
+                await target.write(chunk)
     except OSError as exc:
+        destination.unlink(missing_ok=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to persist uploaded file") from exc
     finally:
-        upload.file.seek(0)
+        await upload.close()
 
-    return relative_path.as_posix(), destination
-
-
-def _compute_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return destination
 
 
-def _generate_fast_artifacts(asset_id: UUID, original_path: Path, include_small: bool) -> None:
-    try:
-        blurhash_value = build_fast_variants(original_path, asset_id, include_small=include_small)
-    except Exception:
-        return
-
-    with Session(engine) as session:
-        asset = session.get(Asset, asset_id)
-        if asset is None:
-            return
-        asset.blurhash = blurhash_value
-        session.add(asset)
-        session.commit()
-
-
-async def _enqueue_asset_job(asset_id: UUID) -> bool:
-    try:
-        redis = await create_pool(RedisSettings.from_dsn(REDIS_URL))
-        try:
-            await redis.enqueue_job("process_asset_metadata", str(asset_id))
-        finally:
-            await redis.aclose()
-    except Exception:
-        return False
-    return True
+def _build_ingest_response(request: Request, asset: Asset, queued_job: bool) -> AssetIngestResponse:
+    return AssetIngestResponse(
+        id=asset.id,
+        file_hash=asset.file_hash,
+        master_path=asset.master_path,
+        mime_type=asset.mime_type,
+        width=asset.width,
+        height=asset.height,
+        has_large_preview=asset.has_large_preview,
+        tiny_thumbnail_url=_thumbnail_url(request, asset.id, "tiny"),
+        small_thumbnail_url=_thumbnail_url(request, asset.id, "small"),
+        large_preview_url=_detail_image_url(request, asset),
+        blurhash=asset.blurhash,
+        queued_job=queued_job,
+    )
 
 
 def _build_tag_models(rows: list[dict[str, Any]] | None) -> list[TagSummary]:
@@ -310,77 +252,66 @@ def _asset_relations_subqueries() -> tuple[Any, Any]:
 
 @router.post("/ingest", response_model=AssetIngestResponse, status_code=status.HTTP_201_CREATED)
 async def ingest_asset(
+    payload: AssetIngestPathRequest,
     request: Request,
-    background_tasks: BackgroundTasks,
-    file: UploadFile | None = File(default=None),
-    file_path: str | None = Form(default=None),
-    session: Session = Depends(get_session),
+    asset_service: AssetService = Depends(get_asset_service),
     current_user: User = Depends(get_current_user),
 ) -> AssetIngestResponse:
-    resolved_relative_path: str | None = None
-    source_path: Path | None = None
-    uploaded_path: Path | None = None
+    result = await asset_service.process_new_asset(payload.file_path, current_user.id)
+    return _build_ingest_response(request, result.asset, result.queued_job)
 
-    if file is not None:
-        resolved_relative_path, source_path = _save_uploaded_file(file)
-        uploaded_path = source_path
-    else:
-        if request.headers.get("content-type", "").startswith("application/json"):
-            payload = AssetIngestPathRequest.model_validate(await request.json())
-            file_path = payload.file_path
-        if not file_path:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Provide either file upload or file_path")
-        resolved_relative_path = _coerce_relative_path(file_path)
-        source_path = _resolve_original_path(resolved_relative_path)
 
-    assert resolved_relative_path is not None
-    assert source_path is not None
+@router.post("/upload", response_model=AssetIngestResponse, status_code=status.HTTP_201_CREATED)
+async def upload_asset(
+    request: Request,
+    file: UploadFile = File(...),
+    asset_service: AssetService = Depends(get_asset_service),
+    current_user: User = Depends(get_current_user),
+) -> AssetIngestResponse:
+    saved_path = await _save_upload_to_originals(file)
+    result = await asset_service.process_new_asset(
+        str(saved_path),
+        current_user.id,
+        uploaded_content_type=file.content_type,
+    )
+    return _build_ingest_response(request, result.asset, result.queued_job)
 
-    file_hash = _compute_sha256(source_path)
-    existing_asset = session.exec(select(Asset).where(Asset.file_hash == file_hash, _active_asset_where())).first()
-    if existing_asset is not None:
-        if uploaded_path is not None:
-            uploaded_path.unlink(missing_ok=True)
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Asset with the same file hash already exists")
+
+@router.post("/scan", response_model=AssetScanResponse, status_code=status.HTTP_202_ACCEPTED)
+async def scan_assets(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> AssetScanResponse:
+    existing_paths = set(session.exec(select(Asset.master_path).where(active_asset_where())).all())
+
+    scanned_files = 0
+    already_ingested = 0
+    enqueued_jobs = 0
 
     try:
-        width, height = validate_supported_image(source_path)
-    except ValueError:
-        logger.warning("Rejecting unsupported asset during ingest: %s", source_path)
-        if uploaded_path is not None:
-            uploaded_path.unlink(missing_ok=True)
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported image file")
+        redis = await create_pool(RedisSettings.from_dsn(REDIS_URL))
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Failed to connect to the job queue") from exc
 
-    asset = Asset(
-        file_hash=file_hash,
-        master_path=resolved_relative_path,
-        mime_type=_guess_mime_type(source_path, file.content_type if file else None),
-        width=width,
-        height=height,
-        has_large_preview=should_generate_large_preview(width, height),
-        file_size_bytes=source_path.stat().st_size,
-    )
-    session.add(asset)
-    session.commit()
-    session.refresh(asset)
+    try:
+        for path in MEDIA_ORIGINALS_DIR.rglob("*"):
+            if not path.is_file():
+                continue
+            scanned_files += 1
+            relative_path = path.relative_to(MEDIA_ORIGINALS_DIR).as_posix()
+            if relative_path in existing_paths:
+                already_ingested += 1
+                continue
+            job = await redis.enqueue_job("ingest_asset_path", relative_path, str(current_user.id))
+            if job is not None:
+                enqueued_jobs += 1
+    finally:
+        await redis.aclose()
 
-    include_small = should_generate_small_in_api(asset.mime_type, asset.file_size_bytes or 0)
-    background_tasks.add_task(_generate_fast_artifacts, asset.id, source_path, include_small)
-    queued_job = await _enqueue_asset_job(asset.id)
-
-    return AssetIngestResponse(
-        id=asset.id,
-        file_hash=asset.file_hash,
-        master_path=asset.master_path,
-        mime_type=asset.mime_type,
-        width=asset.width,
-        height=asset.height,
-        has_large_preview=asset.has_large_preview,
-        tiny_thumbnail_url=_thumbnail_url(request, asset.id, "tiny"),
-        small_thumbnail_url=_thumbnail_url(request, asset.id, "small"),
-        large_preview_url=_detail_image_url(request, asset),
-        blurhash=asset.blurhash,
-        queued_job=queued_job,
+    return AssetScanResponse(
+        scanned_files=scanned_files,
+        already_ingested=already_ingested,
+        enqueued_jobs=enqueued_jobs,
     )
 
 
@@ -396,7 +327,7 @@ def list_assets(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid pagination parameters")
 
     tags_subquery, faces_subquery = _asset_relations_subqueries()
-    total = session.exec(select(func.count()).select_from(Asset).where(_active_asset_where())).one()
+    total = session.exec(select(func.count()).select_from(Asset).where(active_asset_where())).one()
     offset = (page - 1) * page_size
 
     statement = (
@@ -405,7 +336,7 @@ def list_assets(
             tags_subquery.c.tags,
             faces_subquery.c.faces,
         )
-        .where(_active_asset_where())
+        .where(active_asset_where())
         .outerjoin(tags_subquery, tags_subquery.c.asset_id == Asset.id)
         .outerjoin(faces_subquery, faces_subquery.c.asset_id == Asset.id)
         .order_by(Asset.captured_at.desc().nullslast(), Asset.created_at.desc())
@@ -448,7 +379,7 @@ def get_asset(
             tags_subquery.c.tags,
             faces_subquery.c.faces,
         )
-        .where(Asset.id == asset_id, _active_asset_where())
+        .where(Asset.id == asset_id, active_asset_where())
         .outerjoin(tags_subquery, tags_subquery.c.asset_id == Asset.id)
         .outerjoin(faces_subquery, faces_subquery.c.asset_id == Asset.id)
     )

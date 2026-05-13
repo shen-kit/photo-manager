@@ -10,6 +10,7 @@ from sqlmodel import Session
 
 from app.core.database import engine
 from app.models import Asset
+from app.services.asset_service import AssetService
 from app.services.assets_media import (
     MEDIA_ORIGINALS_DIR,
     processed_asset_dir,
@@ -67,6 +68,15 @@ def _run_clip_embeddings(asset: Asset) -> None:
 
 def _run_facial_recognition(asset: Asset) -> None:
     logger.info("Facial recognition placeholder for asset %s", asset.id)
+
+
+async def ingest_asset_path(_: dict[str, object], file_path: str, user_id: str) -> None:
+    with Session(engine) as session:
+        service = AssetService(session=session)
+        try:
+            await service.process_new_asset(file_path, UUID(user_id))
+        except Exception:
+            logger.exception("Failed to ingest asset from path %s", file_path)
 
 
 async def process_asset_metadata(_: dict[str, object], asset_id: str) -> None:
