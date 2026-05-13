@@ -1,13 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime, timezone
-import os
+import mimetypes
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
 import aiofiles
-from arq.connections import RedisSettings, create_pool
 from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile, status
 from sqlalchemy import func
 from sqlmodel import Field, SQLModel, Session, select
@@ -16,10 +16,17 @@ from app.core.auth import get_current_user
 from app.core.database import get_session
 from app.models import Asset, AssetTag, Face, Person, Tag, User
 from app.services.asset_service import AssetService, active_asset_where, get_asset_service
-from app.services.assets_media import MEDIA_ORIGINALS_DIR
+from app.services.assets_media import (
+    MEDIA_ORIGINALS_DIR,
+    MEDIA_ORIGINALS_TMP_DIR,
+    MEDIA_PROCESSED_DIR,
+    canonical_original_path,
+    is_supported_video_mime_type,
+    is_supported_media_mime_type,
+    processed_video_preview_path,
+)
 
 router = APIRouter()
-REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 
 
 class AssetIngestPathRequest(SQLModel):
@@ -76,6 +83,10 @@ class AssetDetailResponse(SQLModel):
     height: int | None = None
     has_large_preview: bool
     file_size_bytes: int | None = None
+    video_codec: str | None = None
+    audio_codec: str | None = None
+    duration_seconds: float | None = None
+    preview_status: str | None = None
     blurhash: str | None = None
     exif_data: dict[str, Any] | None = None
     tags: list[TagSummary] = Field(default_factory=list)
@@ -93,6 +104,10 @@ class AssetIngestResponse(SQLModel):
     width: int | None = None
     height: int | None = None
     has_large_preview: bool
+    video_codec: str | None = None
+    audio_codec: str | None = None
+    duration_seconds: float | None = None
+    preview_status: str | None = None
     tiny_thumbnail_url: str
     small_thumbnail_url: str
     large_preview_url: str
@@ -117,10 +132,15 @@ def _thumbnail_url(request: Request, asset_id: UUID, variant: str) -> str:
 
 
 def _original_asset_url(request: Request, master_path: str) -> str:
-    return str(request.base_url).rstrip("/") + f"/media/originals/{master_path.lstrip('/')}"
+    base_url = str(request.base_url).rstrip("/")
+    normalized = master_path.lstrip("/")
+    return f"{base_url}/media/originals/{normalized}"
 
 
 def _detail_image_url(request: Request, asset: Asset) -> str:
+    if is_supported_video_mime_type(asset.mime_type):
+        relative_preview = processed_video_preview_path(asset.id).relative_to(MEDIA_PROCESSED_DIR).as_posix()
+        return str(request.base_url).rstrip("/") + f"/media/processed/{relative_preview}"
     if asset.has_large_preview:
         return _thumbnail_url(request, asset.id, "large")
     return _original_asset_url(request, asset.master_path)
@@ -133,24 +153,32 @@ def _get_active_asset(session: Session, asset_id: UUID) -> Asset:
     return asset
 
 
-async def _save_upload_to_originals(upload: UploadFile) -> Path:
+async def _save_upload_to_originals(upload: UploadFile) -> tuple[Path, str, str]:
     filename = Path(upload.filename or f"{uuid4().hex}.bin")
     suffix = filename.suffix.lower()
-    now = datetime.now(timezone.utc)
-    relative_path = Path("uploads") / now.strftime("%Y") / now.strftime("%m") / f"{uuid4().hex}{suffix}"
-    destination = (MEDIA_ORIGINALS_DIR / relative_path).resolve()
+    detected_content_type = upload.content_type
+    if not detected_content_type or detected_content_type == "application/octet-stream":
+        detected_content_type = mimetypes.guess_type(filename.name)[0] or "application/octet-stream"
+    if not is_supported_media_mime_type(detected_content_type):
+        await upload.close()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only image and video files are supported")
+
+    destination = (MEDIA_ORIGINALS_TMP_DIR / f"{uuid4().hex}.part").resolve()
 
     try:
         destination.relative_to(MEDIA_ORIGINALS_DIR)
     except ValueError as exc:
+        await upload.close()
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Upload destination escaped the originals root") from exc
 
     destination.parent.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256()
 
     try:
         await upload.seek(0)
         async with aiofiles.open(destination, "wb") as target:
             while chunk := await upload.read(1024 * 1024):
+                digest.update(chunk)
                 await target.write(chunk)
     except OSError as exc:
         destination.unlink(missing_ok=True)
@@ -158,7 +186,25 @@ async def _save_upload_to_originals(upload: UploadFile) -> Path:
     finally:
         await upload.close()
 
-    return destination
+    file_hash = digest.hexdigest()
+    final_path = canonical_original_path(file_hash, suffix)
+    try:
+        final_path.relative_to(MEDIA_ORIGINALS_DIR)
+    except ValueError as exc:
+        destination.unlink(missing_ok=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Final upload path escaped the originals root") from exc
+
+    if final_path.exists():
+        destination.unlink(missing_ok=True)
+        return final_path, file_hash, detected_content_type
+
+    try:
+        destination.rename(final_path)
+    except OSError as exc:
+        destination.unlink(missing_ok=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to finalize uploaded file") from exc
+
+    return final_path, file_hash, detected_content_type
 
 
 def _build_ingest_response(request: Request, asset: Asset, queued_job: bool) -> AssetIngestResponse:
@@ -170,6 +216,10 @@ def _build_ingest_response(request: Request, asset: Asset, queued_job: bool) -> 
         width=asset.width,
         height=asset.height,
         has_large_preview=asset.has_large_preview,
+        video_codec=asset.video_codec,
+        audio_codec=asset.audio_codec,
+        duration_seconds=asset.duration_seconds,
+        preview_status=asset.preview_status,
         tiny_thumbnail_url=_thumbnail_url(request, asset.id, "tiny"),
         small_thumbnail_url=_thumbnail_url(request, asset.id, "small"),
         large_preview_url=_detail_image_url(request, asset),
@@ -257,56 +307,54 @@ async def ingest_asset(
     asset_service: AssetService = Depends(get_asset_service),
     current_user: User = Depends(get_current_user),
 ) -> AssetIngestResponse:
-    result = await asset_service.process_new_asset(payload.file_path, current_user.id)
+    result = await asset_service.process_new_asset(payload.file_path, current_user.id, restore_deleted=True)
     return _build_ingest_response(request, result.asset, result.queued_job)
 
 
 @router.post("/upload", response_model=AssetIngestResponse, status_code=status.HTTP_201_CREATED)
 async def upload_asset(
+    response: Response,
     request: Request,
     file: UploadFile = File(...),
     asset_service: AssetService = Depends(get_asset_service),
     current_user: User = Depends(get_current_user),
 ) -> AssetIngestResponse:
-    saved_path = await _save_upload_to_originals(file)
+    saved_path, file_hash, detected_content_type = await _save_upload_to_originals(file)
     result = await asset_service.process_new_asset(
         str(saved_path),
         current_user.id,
-        uploaded_content_type=file.content_type,
+        uploaded_content_type=detected_content_type,
+        precomputed_file_hash=file_hash,
+        restore_deleted=True,
     )
+    if not result.created_new:
+        response.status_code = status.HTTP_200_OK
     return _build_ingest_response(request, result.asset, result.queued_job)
 
 
 @router.post("/scan", response_model=AssetScanResponse, status_code=status.HTTP_202_ACCEPTED)
 async def scan_assets(
-    session: Session = Depends(get_session),
+    asset_service: AssetService = Depends(get_asset_service),
     current_user: User = Depends(get_current_user),
 ) -> AssetScanResponse:
-    existing_paths = set(session.exec(select(Asset.master_path).where(active_asset_where())).all())
-
     scanned_files = 0
     already_ingested = 0
     enqueued_jobs = 0
 
-    try:
-        redis = await create_pool(RedisSettings.from_dsn(REDIS_URL))
-    except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Failed to connect to the job queue") from exc
+    for path in MEDIA_ORIGINALS_DIR.rglob("*"):
+        if not path.is_file() or path.name == '.gitkeep':
+            continue
+        if MEDIA_ORIGINALS_TMP_DIR in path.parents:
+            continue
 
-    try:
-        for path in MEDIA_ORIGINALS_DIR.rglob("*"):
-            if not path.is_file():
-                continue
-            scanned_files += 1
-            relative_path = path.relative_to(MEDIA_ORIGINALS_DIR).as_posix()
-            if relative_path in existing_paths:
-                already_ingested += 1
-                continue
-            job = await redis.enqueue_job("ingest_asset_path", relative_path, str(current_user.id))
-            if job is not None:
-                enqueued_jobs += 1
-    finally:
-        await redis.aclose()
+        scanned_files += 1
+        result = await asset_service.process_new_asset(str(path), current_user.id)
+        if not result.created_new and result.asset.deleted_at is not None:
+            continue
+        if result.queued_job:
+            enqueued_jobs += 1
+        if not result.created_new:
+            already_ingested += 1
 
     return AssetScanResponse(
         scanned_files=scanned_files,
@@ -315,6 +363,7 @@ async def scan_assets(
     )
 
 
+@router.get("", response_model=AssetListResponse, include_in_schema=False)
 @router.get("/", response_model=AssetListResponse)
 def list_assets(
     request: Request,
@@ -401,6 +450,10 @@ def get_asset(
         height=asset.height,
         has_large_preview=asset.has_large_preview,
         file_size_bytes=asset.file_size_bytes,
+        video_codec=asset.video_codec,
+        audio_codec=asset.audio_codec,
+        duration_seconds=asset.duration_seconds,
+        preview_status=asset.preview_status,
         blurhash=asset.blurhash,
         exif_data=asset.exif_data,
         tags=_build_tag_models(tags),

@@ -182,7 +182,6 @@ def refresh(
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
 def logout(
     request: Request,
-    response: Response,
     session: Session = Depends(get_session),
 ) -> Response:
     raw_refresh_token = request.cookies.get(REFRESH_COOKIE_NAME)
@@ -194,6 +193,7 @@ def logout(
             session.add(token_record)
             session.commit()
 
+    response = Response(status_code=status.HTTP_204_NO_CONTENT)
     _clear_refresh_cookie(request=request, response=response)
     return response
 

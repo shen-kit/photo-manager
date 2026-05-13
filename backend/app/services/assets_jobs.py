@@ -10,12 +10,18 @@ from sqlmodel import Session
 
 from app.core.database import engine
 from app.models import Asset
-from app.services.asset_service import AssetService
 from app.services.assets_media import (
-    MEDIA_ORIGINALS_DIR,
+    inspect_video,
+    is_supported_video_mime_type,
+    master_path_to_source_path,
     processed_asset_dir,
+    processed_video_preview_path,
     should_generate_large_preview,
     should_generate_small_in_api,
+    VIDEO_PREVIEW_STATUS_FAILED,
+    VIDEO_PREVIEW_STATUS_PROCESSING,
+    VIDEO_PREVIEW_STATUS_READY,
+    write_video_preview,
     write_asset_variants,
 )
 
@@ -62,6 +68,10 @@ def _remove_large_preview(asset_id: UUID) -> None:
     large_path.unlink(missing_ok=True)
 
 
+def _remove_video_preview(asset_id: UUID) -> None:
+    processed_video_preview_path(asset_id).unlink(missing_ok=True)
+
+
 def _run_clip_embeddings(asset: Asset) -> None:
     logger.info("CLIP embedding placeholder for asset %s", asset.id)
 
@@ -70,35 +80,28 @@ def _run_facial_recognition(asset: Asset) -> None:
     logger.info("Facial recognition placeholder for asset %s", asset.id)
 
 
-async def ingest_asset_path(_: dict[str, object], file_path: str, user_id: str) -> None:
-    with Session(engine) as session:
-        service = AssetService(session=session)
-        try:
-            await service.process_new_asset(file_path, UUID(user_id))
-        except Exception:
-            logger.exception("Failed to ingest asset from path %s", file_path)
-
-
 async def process_asset_metadata(_: dict[str, object], asset_id: str) -> None:
     with Session(engine) as session:
         asset = session.get(Asset, UUID(asset_id))
         if asset is None:
             return
 
-        original_path = (MEDIA_ORIGINALS_DIR / asset.master_path).resolve()
         try:
-            original_path.relative_to(MEDIA_ORIGINALS_DIR)
+            original_path = master_path_to_source_path(asset.master_path)
         except ValueError:
             return
         if not original_path.is_file():
             return
 
-        try:
-            with Image.open(original_path) as image:
-                normalized = ImageOps.exif_transpose(image)
-                exif_data = _extract_exif_data(normalized)
-        except Exception:
+        if is_supported_video_mime_type(asset.mime_type):
             exif_data = {}
+        else:
+            try:
+                with Image.open(original_path) as image:
+                    normalized = ImageOps.exif_transpose(image)
+                    exif_data = _extract_exif_data(normalized)
+            except Exception:
+                exif_data = {}
 
         asset.exif_data = exif_data or None
         parsed_captured_at, parsed_captured_at_local = _parse_captured_timestamps(exif_data)
@@ -106,14 +109,42 @@ async def process_asset_metadata(_: dict[str, object], asset_id: str) -> None:
             asset.captured_at = parsed_captured_at
         if asset.captured_at_local is None and parsed_captured_at_local is not None:
             asset.captured_at_local = parsed_captured_at_local
+        if is_supported_video_mime_type(asset.mime_type):
+            try:
+                video_metadata = inspect_video(original_path)
+            except ValueError:
+                asset.preview_status = VIDEO_PREVIEW_STATUS_FAILED
+                _remove_video_preview(asset.id)
+                session.add(asset)
+                session.commit()
+                return
+            asset.width = video_metadata.width
+            asset.height = video_metadata.height
+            asset.video_codec = video_metadata.video_codec
+            asset.audio_codec = video_metadata.audio_codec
+            asset.duration_seconds = video_metadata.duration_seconds
+            asset.preview_status = VIDEO_PREVIEW_STATUS_PROCESSING
+            session.add(asset)
+            session.commit()
         if not should_generate_small_in_api(asset.mime_type, asset.file_size_bytes or 0):
-            write_asset_variants(original_path, asset.id, ("small",))
+            write_asset_variants(original_path, asset.id, ("small",), asset.mime_type)
 
         asset.has_large_preview = should_generate_large_preview(asset.width, asset.height)
         if asset.has_large_preview:
-            write_asset_variants(original_path, asset.id, ("large",))
+            write_asset_variants(original_path, asset.id, ("large",), asset.mime_type)
         else:
             _remove_large_preview(asset.id)
+        if is_supported_video_mime_type(asset.mime_type):
+            try:
+                write_video_preview(original_path, asset.id)
+            except Exception:
+                asset.preview_status = VIDEO_PREVIEW_STATUS_FAILED
+                _remove_video_preview(asset.id)
+                session.add(asset)
+                session.commit()
+                logger.exception("Failed to generate video preview for asset %s", asset.id)
+                return
+            asset.preview_status = VIDEO_PREVIEW_STATUS_READY
 
         _run_clip_embeddings(asset)
         _run_facial_recognition(asset)

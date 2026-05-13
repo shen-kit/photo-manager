@@ -9,6 +9,7 @@ from app.api.v1.router import api_v1_router
 from app.core.database import create_db_and_tables
 
 MEDIA_ORIGINALS_DIR = Path(os.getenv("MEDIA_ORIGINALS_DIR", "/media/originals"))
+MEDIA_ORIGINALS_TMP_DIR = MEDIA_ORIGINALS_DIR / ".tmp"
 MEDIA_PROCESSED_DIR = Path(os.getenv("MEDIA_PROCESSED_DIR", "/media/processed"))
 
 
@@ -16,6 +17,7 @@ MEDIA_PROCESSED_DIR = Path(os.getenv("MEDIA_PROCESSED_DIR", "/media/processed"))
 async def lifespan(_: FastAPI):
     create_db_and_tables()
     MEDIA_ORIGINALS_DIR.mkdir(parents=True, exist_ok=True)
+    MEDIA_ORIGINALS_TMP_DIR.mkdir(parents=True, exist_ok=True)
     MEDIA_PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
     yield
 

@@ -58,7 +58,7 @@ services:
     volumes:
       - ./backend:/app
       - ./data/ai_cache:/cache/ai
-      - ./storage/originals:/media/originals:ro
+      - ./storage/originals:/media/originals
       - ./storage/processed:/media/processed
 
   worker:

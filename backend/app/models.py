@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import BigInteger, Column, DateTime, ForeignKey, Index, Integer, Text, UniqueConstraint, desc
+from sqlalchemy import BigInteger, Column, DateTime, Float, ForeignKey, Index, Integer, Text, UniqueConstraint, desc
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PGUUID
 from sqlalchemy.types import Boolean, UserDefinedType
 from sqlmodel import Field, SQLModel
@@ -73,6 +73,10 @@ class Asset(SQLModel, table=True):
         sa_column=Column(Boolean, nullable=False, server_default="false"),
     )
     file_size_bytes: int | None = Field(default=None, sa_column=Column(BigInteger, nullable=True))
+    video_codec: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
+    audio_codec: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
+    duration_seconds: float | None = Field(default=None, sa_column=Column(Float, nullable=True))
+    preview_status: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
     exif_data: dict[str, Any] | None = Field(
         default=None,
         sa_column=Column(JSONB, nullable=True),
