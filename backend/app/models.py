@@ -60,13 +60,16 @@ class AIModel(SQLModel, table=True):
 
 class Asset(SQLModel, table=True):
     __tablename__ = "assets"
-    __table_args__ = (Index("idx_assets_captured_at", desc("captured_at")),)
+    __table_args__ = (
+        Index("idx_assets_captured_at", desc("captured_at")),
+        Index("uq_assets_file_hash", "file_hash", unique=True),
+    )
 
     id: UUID = Field(
         default_factory=uuid4,
         sa_column=Column(PGUUID(as_uuid=True), primary_key=True, nullable=False),
     )
-    file_hash: str = Field(sa_column=Column(Text, unique=True, nullable=False))
+    file_hash: str = Field(sa_column=Column(Text, nullable=False))
     master_path: str = Field(sa_column=Column(Text, nullable=False))
     mime_type: str = Field(sa_column=Column(Text, nullable=False))
     captured_at: datetime | None = Field(

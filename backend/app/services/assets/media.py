@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import imghdr
+import mimetypes
 import os
 import subprocess
 import tempfile
@@ -82,6 +84,16 @@ def is_supported_image_mime_type(mime_type: str) -> bool:
 
 def is_supported_video_mime_type(mime_type: str) -> bool:
     return mime_type.startswith(SUPPORTED_VIDEO_MIME_PREFIX)
+
+
+def guess_mime_type(path: Path, uploaded_content_type: str | None = None) -> str:
+    if uploaded_content_type and uploaded_content_type != "application/octet-stream":
+        return uploaded_content_type
+    guessed, _ = mimetypes.guess_type(path.name)
+    if guessed:
+        return guessed
+    detected = imghdr.what(path)
+    return f"image/{detected}" if detected else "application/octet-stream"
 
 
 def master_path_to_source_path(master_path: str) -> Path:

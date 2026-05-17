@@ -1,3 +1,3 @@
-from .main import WorkerSettings, main
+from .settings import WorkerSettings, main
 
 __all__ = ["WorkerSettings", "main"]

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import logging
+import os
 from datetime import UTC, datetime
+from pathlib import Path
 from uuid import UUID
 
+from arq.connections import RedisSettings, create_pool
 from PIL import Image, ImageOps
 from sqlmodel import Session
 
@@ -13,6 +16,7 @@ from app.services.assets.media import (
     VIDEO_PREVIEW_STATUS_FAILED,
     VIDEO_PREVIEW_STATUS_PROCESSING,
     VIDEO_PREVIEW_STATUS_READY,
+    build_fast_variants,
     inspect_video,
     is_supported_video_mime_type,
     master_path_to_source_path,
@@ -26,7 +30,26 @@ from app.services.assets.media import (
 
 EXIF_DATETIME_TAGS = ("36867", "306")
 EXIF_OFFSET_TAGS = ("36881", "36880", "36882")
+REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 logger = logging.getLogger(__name__)
+
+
+async def enqueue_job(job_name: str, *args: object) -> bool:
+    try:
+        redis = await create_pool(RedisSettings.from_dsn(REDIS_URL))
+        try:
+            await redis.enqueue_job(job_name, *args)
+        finally:
+            await redis.aclose()
+    except Exception:
+        logger.exception("Failed to enqueue job %s", job_name)
+        return False
+    return True
+
+
+async def enqueue_asset_processing_job(asset_id: UUID) -> bool:
+    logger.info(f"Queuing process metadata job for: {asset_id}")
+    return await enqueue_job("process_asset_metadata", str(asset_id))
 
 
 def _extract_exif_data(image: Image.Image) -> dict[str, str]:
@@ -87,6 +110,31 @@ def _run_facial_recognition(asset: Asset) -> None:
     logger.info("Facial recognition placeholder for asset %s", asset.id)
 
 
+def _ensure_fast_artifacts(asset: Asset, original_path: Path) -> None:
+    logger.info(f"Ensure fast artifacts called for: {asset.file_hash}, {asset.id}.")
+    include_small = is_supported_video_mime_type(
+        asset.mime_type
+    ) or should_generate_small_in_api(asset.mime_type, asset.file_size_bytes or 0)
+    output_dir = processed_asset_dir(asset.id)
+    tiny_path = output_dir / "tiny.webp"
+    small_path = output_dir / "small.webp"
+
+    if tiny_path.is_file() and asset.blurhash is not None:
+        if not include_small or small_path.is_file():
+            logger.info(
+                f"Fast artifacts already generated for: {asset.file_hash}, {asset.id}."
+            )
+            return
+
+    logger.info(f"Building fast artifacts for: {asset.file_hash}, {asset.id}.")
+    asset.blurhash = build_fast_variants(
+        original_path,
+        asset.id,
+        include_small=include_small,
+        mime_type=asset.mime_type,
+    )
+
+
 async def process_asset_metadata(_: dict[str, object], asset_id: str) -> None:
     with Session(engine) as session:
         asset = session.get(Asset, UUID(asset_id))
@@ -118,6 +166,9 @@ async def process_asset_metadata(_: dict[str, object], asset_id: str) -> None:
             asset.captured_at = parsed_captured_at
         if asset.captured_at_local is None and parsed_captured_at_local is not None:
             asset.captured_at_local = parsed_captured_at_local
+
+        _ensure_fast_artifacts(asset, original_path)
+
         if is_supported_video_mime_type(asset.mime_type):
             try:
                 video_metadata = inspect_video(original_path)

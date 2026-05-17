@@ -6,11 +6,12 @@ from arq import run_worker
 from arq.connections import RedisSettings
 
 from app.core.database import create_db_and_tables
-from app.services.assets.jobs import process_asset_metadata
+from app.core.logging import setup_logging
+from .tasks import process_asset_metadata, scan_originals_library
 
 
 class WorkerSettings:
-    functions = [process_asset_metadata]
+    functions = [process_asset_metadata, scan_originals_library]
     redis_settings = RedisSettings.from_dsn(
         os.getenv("REDIS_URL", "redis://redis:6379/0")
     )
@@ -18,9 +19,6 @@ class WorkerSettings:
 
 
 def main() -> None:
+    setup_logging()
     create_db_and_tables()
     run_worker(WorkerSettings)
-
-
-if __name__ == "__main__":
-    main()

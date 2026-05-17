@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import hashlib
-import imghdr
 import logging
 import mimetypes
-import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,7 +10,6 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import aiofiles
-from arq.connections import RedisSettings, create_pool
 from fastapi import BackgroundTasks, Depends, HTTPException, UploadFile, status
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
@@ -20,6 +17,8 @@ from sqlmodel import Session, select
 
 from app.core.database import engine, get_session
 from app.models import Asset, AssetTag, Face, Person, Tag
+from app.services.assets.hashing import compute_sha256
+from app.services.assets.jobs import enqueue_asset_processing_job
 from app.services.assets.media import (
     MEDIA_ORIGINALS_DIR,
     MEDIA_ORIGINALS_TMP_DIR,
@@ -28,6 +27,7 @@ from app.services.assets.media import (
     VIDEO_PREVIEW_STATUS_READY,
     build_fast_variants,
     canonical_original_path,
+    guess_mime_type,
     inspect_video,
     is_canonical_hashed_original,
     is_supported_image_mime_type,
@@ -42,8 +42,8 @@ from app.services.assets.media import (
     source_path_to_master_path,
     validate_supported_media,
 )
+from app.services.assets.scan import enqueue_scan_job
 
-REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 logger = logging.getLogger(__name__)
 
 
@@ -55,24 +55,12 @@ class AssetProcessResult:
 
 
 @dataclass(frozen=True)
-class AssetScanResult:
-    scanned_files: int
-    already_ingested: int
-    enqueued_jobs: int
+class AssetScanEnqueueResult:
+    queued_job: bool
 
 
 def active_asset_where():
     return Asset.deleted_at.is_(None)
-
-
-def guess_mime_type(path: Path, uploaded_content_type: str | None = None) -> str:
-    if uploaded_content_type and uploaded_content_type != "application/octet-stream":
-        return uploaded_content_type
-    guessed, _ = mimetypes.guess_type(path.name)
-    if guessed:
-        return guessed
-    detected = imghdr.what(path)
-    return f"image/{detected}" if detected else "application/octet-stream"
 
 
 def _generate_fast_artifacts(
@@ -94,19 +82,6 @@ def _generate_fast_artifacts(
             session.commit()
     except Exception:
         logger.exception("Failed to generate fast asset variants for %s", asset_id)
-
-
-async def _enqueue_asset_job(asset_id: UUID) -> bool:
-    try:
-        redis = await create_pool(RedisSettings.from_dsn(REDIS_URL))
-        try:
-            await redis.enqueue_job("process_asset_metadata", str(asset_id))
-        finally:
-            await redis.aclose()
-    except Exception:
-        logger.exception("Failed to enqueue heavy asset processing for %s", asset_id)
-        return False
-    return True
 
 
 class AssetService:
@@ -194,6 +169,7 @@ class AssetService:
             return final_path, file_hash, detected_content_type
 
         try:
+            destination.parent.mkdir(parents=True, exist_ok=True)
             destination.rename(final_path)
         except OSError as exc:
             destination.unlink(missing_ok=True)
@@ -225,31 +201,8 @@ class AssetService:
     ) -> AssetProcessResult:
         return await self.process_new_asset(file_path, user_id, restore_deleted=True)
 
-    async def scan_assets(self, user_id: UUID) -> AssetScanResult:
-        scanned_files = 0
-        already_ingested = 0
-        enqueued_jobs = 0
-
-        for path in MEDIA_ORIGINALS_DIR.rglob("*"):
-            if not path.is_file() or path.name == ".gitkeep":
-                continue
-            if MEDIA_ORIGINALS_TMP_DIR in path.parents:
-                continue
-
-            scanned_files += 1
-            result = await self.process_new_asset(str(path), user_id)
-            if not result.created_new and result.asset.deleted_at is not None:
-                continue
-            if result.queued_job:
-                enqueued_jobs += 1
-            if not result.created_new:
-                already_ingested += 1
-
-        return AssetScanResult(
-            scanned_files=scanned_files,
-            already_ingested=already_ingested,
-            enqueued_jobs=enqueued_jobs,
-        )
+    async def enqueue_scan(self) -> AssetScanEnqueueResult:
+        return AssetScanEnqueueResult(queued_job=await enqueue_scan_job())
 
     def list_assets(
         self, *, page: int, page_size: int
@@ -329,7 +282,7 @@ class AssetService:
 
         relative_path, source_path = self.resolve_original_path(file_path)
         mime_type = guess_mime_type(source_path, uploaded_content_type)
-        file_hash = precomputed_file_hash or self._compute_sha256(source_path)
+        file_hash = precomputed_file_hash or compute_sha256(source_path)
         existing_asset = self.session.exec(
             select(Asset).where(Asset.file_hash == file_hash)
         ).first()
@@ -356,7 +309,7 @@ class AssetService:
                 self.session.add(existing_asset)
                 self.session.commit()
                 self.session.refresh(existing_asset)
-                queued_job = await _enqueue_asset_job(existing_asset.id)
+                queued_job = await enqueue_asset_processing_job(existing_asset.id)
             self._cleanup_duplicate_source(source_path, existing_asset.master_path)
             return AssetProcessResult(
                 asset=existing_asset, queued_job=queued_job, created_new=False
@@ -417,7 +370,7 @@ class AssetService:
                 self.session.add(existing_asset)
                 self.session.commit()
                 self.session.refresh(existing_asset)
-                queued_job = await _enqueue_asset_job(existing_asset.id)
+                queued_job = await enqueue_asset_processing_job(existing_asset.id)
             self._cleanup_duplicate_source(source_path, existing_asset.master_path)
             return AssetProcessResult(
                 asset=existing_asset, queued_job=queued_job, created_new=False
@@ -438,7 +391,7 @@ class AssetService:
                 self.background_tasks.add_task(
                     _generate_fast_artifacts, asset.id, source_path, include_small
                 )
-        queued_job = await _enqueue_asset_job(asset.id)
+        queued_job = await enqueue_asset_processing_job(asset.id)
         return AssetProcessResult(asset=asset, queued_job=queued_job, created_new=True)
 
     def _get_active_asset_or_404(self, asset_id: UUID) -> Asset:
@@ -493,13 +446,6 @@ class AssetService:
         )
 
         return tags_subquery, faces_subquery
-
-    def _compute_sha256(self, path: Path) -> str:
-        digest = hashlib.sha256()
-        with path.open("rb") as source:
-            for chunk in iter(lambda: source.read(1024 * 1024), b""):
-                digest.update(chunk)
-        return digest.hexdigest()
 
     def _asset_requires_reprocessing(self, asset: Asset) -> bool:
         if not is_supported_video_mime_type(asset.mime_type):
@@ -620,7 +566,7 @@ class AssetService:
                 self.background_tasks.add_task(
                     _generate_fast_artifacts, asset.id, source_path, include_small
                 )
-        queued_job = await _enqueue_asset_job(asset.id)
+        queued_job = await enqueue_asset_processing_job(asset.id)
         return AssetProcessResult(asset=asset, queued_job=queued_job, created_new=False)
 
 

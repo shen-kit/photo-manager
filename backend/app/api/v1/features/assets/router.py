@@ -23,7 +23,11 @@ from app.services.assets.media import (
     is_supported_video_mime_type,
     processed_video_preview_path,
 )
-from app.services.assets.service import AssetScanResult, AssetService, get_asset_service
+from app.services.assets.service import (
+    AssetScanEnqueueResult,
+    AssetService,
+    get_asset_service,
+)
 
 router = APIRouter()
 
@@ -121,9 +125,7 @@ class AssetUpdateRequest(SQLModel):
 
 
 class AssetScanResponse(SQLModel):
-    scanned_files: int
-    already_ingested: int
-    enqueued_jobs: int
+    queued_job: bool
 
 
 def _thumbnail_url(request: Request, asset_id: UUID, variant: str) -> str:
@@ -278,8 +280,9 @@ async def scan_assets(
     asset_service: AssetService = Depends(get_asset_service),
     current_user: User = Depends(get_current_user),
 ) -> AssetScanResponse:
-    result: AssetScanResult = await asset_service.scan_assets(current_user.id)
-    return AssetScanResponse(**result.__dict__)
+    del current_user
+    result: AssetScanEnqueueResult = await asset_service.enqueue_scan()
+    return AssetScanResponse(queued_job=result.queued_job)
 
 
 @router.get("", response_model=AssetListResponse, include_in_schema=False)
