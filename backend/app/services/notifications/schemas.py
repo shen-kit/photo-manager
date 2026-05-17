@@ -6,10 +6,12 @@ from uuid import UUID
 
 from sqlmodel import SQLModel
 
+from .types import NotificationCategory, NotificationLevel
+
 
 class NotificationCreate(SQLModel):
-    level: str
-    category: str
+    level: NotificationLevel
+    category: NotificationCategory
     title: str
     message: str | None = None
     details: dict[str, Any] | None = None
@@ -23,8 +25,8 @@ class NotificationUpdate(SQLModel):
 
 class NotificationRead(SQLModel):
     id: UUID
-    level: str
-    category: str
+    level: NotificationLevel
+    category: NotificationCategory
     title: str
     message: str | None = None
     details: dict[str, Any] | None = None

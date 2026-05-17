@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+from uuid import UUID
 
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
@@ -23,6 +24,9 @@ from app.services.assets.media import (
     source_path_to_master_path,
     validate_supported_media,
 )
+from app.services.jobs.service import JobService
+from app.services.notifications.service import NotificationService
+from app.services.notifications.types import NotificationCategory, NotificationLevel
 
 logger = logging.getLogger(__name__)
 SCAN_BATCH_SIZE = 50
@@ -31,24 +35,41 @@ SCAN_JOB_NAME = "scan_originals_library"
 
 @dataclass(frozen=True)
 class ScanStats:
-    scanned_files: int = 0
-    unsupported_files: int = 0
-    duplicate_files: int = 0
+    files_seen: int = 0
+    supported_files_seen: int = 0
     created_assets: int = 0
-    enqueued_jobs: int = 0
+    duplicates_skipped: int = 0
+    unsupported_skipped: int = 0
+    failed: int = 0
+    processing_jobs_enqueued: int = 0
 
     def add(self, other: "ScanStats") -> "ScanStats":
         return ScanStats(
-            scanned_files=self.scanned_files + other.scanned_files,
-            unsupported_files=self.unsupported_files + other.unsupported_files,
-            duplicate_files=self.duplicate_files + other.duplicate_files,
+            files_seen=self.files_seen + other.files_seen,
+            supported_files_seen=self.supported_files_seen + other.supported_files_seen,
             created_assets=self.created_assets + other.created_assets,
-            enqueued_jobs=self.enqueued_jobs + other.enqueued_jobs,
+            duplicates_skipped=self.duplicates_skipped + other.duplicates_skipped,
+            unsupported_skipped=self.unsupported_skipped + other.unsupported_skipped,
+            failed=self.failed + other.failed,
+            processing_jobs_enqueued=self.processing_jobs_enqueued
+            + other.processing_jobs_enqueued,
         )
 
 
-async def enqueue_scan_job() -> bool:
-    return await enqueue_job(SCAN_JOB_NAME)
+def _stats_to_result(stats: ScanStats) -> dict[str, int]:
+    return {
+        "files_seen": stats.files_seen,
+        "supported_files_seen": stats.supported_files_seen,
+        "assets_created": stats.created_assets,
+        "duplicates_skipped": stats.duplicates_skipped,
+        "unsupported_skipped": stats.unsupported_skipped,
+        "failed": stats.failed,
+        "processing_jobs_enqueued": stats.processing_jobs_enqueued,
+    }
+
+
+async def enqueue_scan_job(job_id: UUID) -> bool:
+    return await enqueue_job(SCAN_JOB_NAME, str(job_id))
 
 
 def iter_scannable_files(root: Path = MEDIA_ORIGINALS_DIR):
@@ -88,28 +109,38 @@ def _inspect_media_for_scan(
     return width, height, None, None, None
 
 
-async def _process_batch(batch: list[Path]) -> ScanStats:
+async def _process_batch(batch: list[Path], job_id: UUID) -> ScanStats:
     stats = ScanStats()
 
     with Session(engine) as session:
         for path in batch:
-            stats = stats.add(ScanStats(scanned_files=1))
+            stats = stats.add(ScanStats(files_seen=1))
             mime_type = guess_mime_type(path)
             if not is_supported_media_mime_type(mime_type):
-                stats = stats.add(ScanStats(unsupported_files=1))
+                stats = stats.add(ScanStats(unsupported_skipped=1))
                 continue
+            stats = stats.add(ScanStats(supported_files_seen=1))
 
             try:
                 file_hash = compute_sha256(path)
             except OSError:
                 logger.exception("Failed to hash %s during library scan", path)
+                NotificationService(session).create_notification(
+                    level=NotificationLevel.WARNING,
+                    category=NotificationCategory.SCAN,
+                    title="Scan failed to process file",
+                    message="The scanner could not hash a file and skipped it.",
+                    details={"path": str(path)},
+                    related_job_id=job_id,
+                )
+                stats = stats.add(ScanStats(failed=1))
                 continue
 
             existing_asset = session.exec(
                 select(Asset.id).where(Asset.file_hash == file_hash)
             ).first()
             if existing_asset is not None:
-                stats = stats.add(ScanStats(duplicate_files=1))
+                stats = stats.add(ScanStats(duplicates_skipped=1))
                 continue
 
             try:
@@ -124,7 +155,7 @@ async def _process_batch(batch: list[Path]) -> ScanStats:
                 logger.warning(
                     "Skipping unsupported file discovered during scan: %s", path
                 )
-                stats = stats.add(ScanStats(unsupported_files=1))
+                stats = stats.add(ScanStats(unsupported_skipped=1))
                 continue
 
             asset = Asset(
@@ -148,39 +179,109 @@ async def _process_batch(batch: list[Path]) -> ScanStats:
                 session.refresh(asset)
             except IntegrityError:
                 session.rollback()
-                stats = stats.add(ScanStats(duplicate_files=1))
+                stats = stats.add(ScanStats(duplicates_skipped=1))
                 continue
 
-            queued_job = await enqueue_asset_processing_job(asset.id)
+            queued_job = await enqueue_asset_processing_job(asset.id, job_id=job_id)
+            if not queued_job:
+                NotificationService(session).create_notification(
+                    level=NotificationLevel.WARNING,
+                    category=NotificationCategory.SCAN,
+                    title="Scan failed to process file",
+                    message="The asset was created, but background processing was not enqueued.",
+                    details={"path": str(path), "asset_id": str(asset.id)},
+                    related_job_id=job_id,
+                    related_asset_id=asset.id,
+                )
+                stats = stats.add(ScanStats(created_assets=1, failed=1))
+                continue
             stats = stats.add(
                 ScanStats(
                     created_assets=1,
-                    enqueued_jobs=1 if queued_job else 0,
+                    processing_jobs_enqueued=1,
                 )
             )
 
     return stats
 
 
-async def scan_originals_library(_: dict[str, object]) -> dict[str, int]:
-    logger.info("WORKER: STARTING SCAN")
-    stats = ScanStats()
-    for batch in _chunked_paths():
-        logger.info("processing batch")
-        stats = stats.add(await _process_batch(batch))
+def _mark_scan_running(job_id: UUID) -> None:
+    with Session(engine) as session:
+        JobService(session).mark_running(job_id, message="Scanning media library")
+        NotificationService(session).create_notification(
+            level=NotificationLevel.INFO,
+            category=NotificationCategory.SCAN,
+            title="Scan started",
+            message="Library scan has started.",
+            related_job_id=job_id,
+        )
 
+
+def _update_scan_progress(job_id: UUID, stats: ScanStats) -> None:
+    with Session(engine) as session:
+        JobService(session).update_progress(
+            job_id,
+            current=stats.files_seen,
+            message=f"Scanned {stats.files_seen} files, created {stats.created_assets} assets",
+        )
+
+
+def _complete_scan(job_id: UUID, stats: ScanStats) -> None:
+    result = _stats_to_result(stats)
+    with Session(engine) as session:
+        JobService(session).complete_job(
+            job_id,
+            result=result,
+            message="Library scan completed",
+        )
+        NotificationService(session).create_notification(
+            level=NotificationLevel.SUCCESS,
+            category=NotificationCategory.SCAN,
+            title="Scan completed",
+            message="Library scan completed successfully.",
+            related_job_id=job_id,
+            details=result,
+        )
+
+
+def _fail_scan(job_id: UUID, error_message: str, stats: ScanStats) -> None:
+    result = _stats_to_result(stats)
+    with Session(engine) as session:
+        JobService(session).fail_job(job_id, error_message, result=result)
+        NotificationService(session).create_notification(
+            level=NotificationLevel.ERROR,
+            category=NotificationCategory.SCAN,
+            title="Scan failed",
+            message=error_message,
+            related_job_id=job_id,
+            details=result,
+        )
+
+
+async def scan_originals_library(_: dict[str, object], job_id: str) -> dict[str, int]:
+    job_uuid = UUID(job_id)
+    stats = ScanStats()
+    _mark_scan_running(job_uuid)
+
+    try:
+        for batch in _chunked_paths():
+            stats = stats.add(await _process_batch(batch, job_uuid))
+            _update_scan_progress(job_uuid, stats)
+    except Exception as exc:
+        logger.exception("Library scan job %s failed", job_uuid)
+        _fail_scan(job_uuid, str(exc), stats)
+        raise
+
+    _complete_scan(job_uuid, stats)
     logger.info(
-        "Completed library scan: scanned=%s unsupported=%s duplicates=%s created=%s enqueued=%s",
-        stats.scanned_files,
-        stats.unsupported_files,
-        stats.duplicate_files,
+        "Completed library scan job %s: files_seen=%s supported=%s created=%s duplicates=%s unsupported=%s failed=%s enqueued=%s",
+        job_uuid,
+        stats.files_seen,
+        stats.supported_files_seen,
         stats.created_assets,
-        stats.enqueued_jobs,
+        stats.duplicates_skipped,
+        stats.unsupported_skipped,
+        stats.failed,
+        stats.processing_jobs_enqueued,
     )
-    return {
-        "scanned_files": stats.scanned_files,
-        "unsupported_files": stats.unsupported_files,
-        "duplicate_files": stats.duplicate_files,
-        "created_assets": stats.created_assets,
-        "enqueued_jobs": stats.enqueued_jobs,
-    }
+    return _stats_to_result(stats)

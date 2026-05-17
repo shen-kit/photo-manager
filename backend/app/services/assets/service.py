@@ -43,6 +43,9 @@ from app.services.assets.media import (
     validate_supported_media,
 )
 from app.services.assets.scan import enqueue_scan_job
+from app.services.jobs.service import JobService
+from app.services.notifications.service import NotificationService
+from app.services.notifications.types import NotificationCategory, NotificationLevel
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +59,7 @@ class AssetProcessResult:
 
 @dataclass(frozen=True)
 class AssetScanEnqueueResult:
-    queued_job: bool
+    job_id: UUID
 
 
 def active_asset_where():
@@ -91,15 +94,37 @@ class AssetService:
         self.session = session
         self.background_tasks = background_tasks
 
+    def _create_asset_warning(
+        self,
+        *,
+        message: str,
+        details: dict[str, str] | None = None,
+    ) -> None:
+        NotificationService(self.session).create_notification(
+            level=NotificationLevel.WARNING,
+            category=NotificationCategory.ASSET,
+            title="Asset file failed to process",
+            message=message,
+            details=details,
+        )
+
     def resolve_original_path(self, file_path: str) -> tuple[str, Path]:
         try:
             return resolve_source_input(file_path)
         except FileNotFoundError as exc:
+            self._create_asset_warning(
+                message="Original file was not found.",
+                details={"path": file_path},
+            )
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Original file was not found",
             ) from exc
         except ValueError as exc:
+            self._create_asset_warning(
+                message=str(exc),
+                details={"path": file_path},
+            )
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
             ) from exc
@@ -119,6 +144,10 @@ class AssetService:
             )
         if not is_supported_media_mime_type(detected_content_type):
             await upload.close()
+            self._create_asset_warning(
+                message="Only image and video files are supported.",
+                details={"filename": filename.name},
+            )
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Only image and video files are supported",
@@ -146,6 +175,10 @@ class AssetService:
                     await target.write(chunk)
         except OSError as exc:
             destination.unlink(missing_ok=True)
+            self._create_asset_warning(
+                message="Failed to persist uploaded file.",
+                details={"filename": filename.name},
+            )
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to persist uploaded file",
@@ -173,6 +206,10 @@ class AssetService:
             destination.rename(final_path)
         except OSError as exc:
             destination.unlink(missing_ok=True)
+            self._create_asset_warning(
+                message="Failed to finalize uploaded file.",
+                details={"filename": filename.name},
+            )
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to finalize uploaded file",
@@ -201,8 +238,35 @@ class AssetService:
     ) -> AssetProcessResult:
         return await self.process_new_asset(file_path, user_id, restore_deleted=True)
 
-    async def enqueue_scan(self) -> AssetScanEnqueueResult:
-        return AssetScanEnqueueResult(queued_job=await enqueue_scan_job())
+    async def enqueue_scan(
+        self, requested_by_user_id: UUID | None = None
+    ) -> AssetScanEnqueueResult:
+        job_service = JobService(self.session)
+        notification_service = NotificationService(self.session)
+        job = job_service.create_job(
+            "scan_library",
+            parameters={
+                "root": str(MEDIA_ORIGINALS_DIR),
+                "requested_by_user_id": str(requested_by_user_id)
+                if requested_by_user_id is not None
+                else None,
+            },
+        )
+        queued_job = await enqueue_scan_job(job.id)
+        if not queued_job:
+            job_service.fail_job(job.id, "Failed to enqueue library scan job")
+            notification_service.create_notification(
+                level=NotificationLevel.ERROR,
+                category=NotificationCategory.SCAN,
+                title="Scan failed",
+                message="The library scan could not be queued.",
+                related_job_id=job.id,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Failed to enqueue library scan job",
+            )
+        return AssetScanEnqueueResult(job_id=job.id)
 
     def list_assets(
         self, *, page: int, page_size: int
@@ -468,6 +532,10 @@ class AssetService:
         except ValueError as exc:
             self._cleanup_temporary_source(source_path)
             logger.warning("Rejecting unsupported asset: %s", source_path)
+            self._create_asset_warning(
+                message=str(exc),
+                details={"path": str(source_path)},
+            )
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"{str(exc)}\nAsset path: {source_path}",

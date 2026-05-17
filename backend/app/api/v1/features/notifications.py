@@ -12,6 +12,7 @@ from app.services.notifications.service import (
     NotificationService,
     get_notification_service,
 )
+from app.services.notifications.types import NotificationCategory, NotificationLevel
 
 router = APIRouter()
 
@@ -23,8 +24,8 @@ class MarkAllReadResponse(SQLModel):
 @router.get("", response_model=list[NotificationRead], include_in_schema=False)
 @router.get("/", response_model=list[NotificationRead])
 def list_notifications(
-    level: str | None = Query(default=None),
-    category: str | None = Query(default=None),
+    level: NotificationLevel | None = Query(default=None),
+    category: NotificationCategory | None = Query(default=None),
     unread_only: bool = Query(default=False),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),

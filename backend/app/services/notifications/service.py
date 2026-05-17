@@ -8,6 +8,7 @@ from sqlmodel import Session, select
 
 from app.core.database import get_session
 from app.models import Notification, utc_now
+from app.services.notifications.types import NotificationCategory, NotificationLevel
 
 
 class NotificationService:
@@ -16,8 +17,8 @@ class NotificationService:
 
     def create_notification(
         self,
-        level: str,
-        category: str,
+        level: NotificationLevel,
+        category: NotificationCategory,
         title: str,
         *,
         message: str | None = None,
@@ -42,8 +43,8 @@ class NotificationService:
     def list_notifications(
         self,
         *,
-        level: str | None = None,
-        category: str | None = None,
+        level: NotificationLevel | None = None,
+        category: NotificationCategory | None = None,
         unread_only: bool = False,
         limit: int = 50,
         offset: int = 0,

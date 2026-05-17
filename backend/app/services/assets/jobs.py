@@ -12,6 +12,9 @@ from sqlmodel import Session
 
 from app.core.database import engine
 from app.models import Asset
+from app.services.jobs.service import JobService
+from app.services.notifications.service import NotificationService
+from app.services.notifications.types import NotificationCategory, NotificationLevel
 from app.services.assets.media import (
     VIDEO_PREVIEW_STATUS_FAILED,
     VIDEO_PREVIEW_STATUS_PROCESSING,
@@ -47,9 +50,13 @@ async def enqueue_job(job_name: str, *args: object) -> bool:
     return True
 
 
-async def enqueue_asset_processing_job(asset_id: UUID) -> bool:
-    logger.info(f"Queuing process metadata job for: {asset_id}")
-    return await enqueue_job("process_asset_metadata", str(asset_id))
+async def enqueue_asset_processing_job(
+    asset_id: UUID, job_id: UUID | None = None
+) -> bool:
+    logger.info("Queuing process metadata job for asset %s", asset_id)
+    if job_id is None:
+        return await enqueue_job("process_asset_metadata", str(asset_id))
+    return await enqueue_job("process_asset_metadata", str(asset_id), str(job_id))
 
 
 def _extract_exif_data(image: Image.Image) -> dict[str, str]:
@@ -111,7 +118,6 @@ def _run_facial_recognition(asset: Asset) -> None:
 
 
 def _ensure_fast_artifacts(asset: Asset, original_path: Path) -> None:
-    logger.info(f"Ensure fast artifacts called for: {asset.file_hash}, {asset.id}.")
     include_small = is_supported_video_mime_type(
         asset.mime_type
     ) or should_generate_small_in_api(asset.mime_type, asset.file_size_bytes or 0)
@@ -121,12 +127,8 @@ def _ensure_fast_artifacts(asset: Asset, original_path: Path) -> None:
 
     if tiny_path.is_file() and asset.blurhash is not None:
         if not include_small or small_path.is_file():
-            logger.info(
-                f"Fast artifacts already generated for: {asset.file_hash}, {asset.id}."
-            )
             return
 
-    logger.info(f"Building fast artifacts for: {asset.file_hash}, {asset.id}.")
     asset.blurhash = build_fast_variants(
         original_path,
         asset.id,
@@ -135,17 +137,87 @@ def _ensure_fast_artifacts(asset: Asset, original_path: Path) -> None:
     )
 
 
-async def process_asset_metadata(_: dict[str, object], asset_id: str) -> None:
+def _update_parent_job_message(
+    *, session: Session, related_job_id: UUID | None, message: str
+) -> None:
+    if related_job_id is None:
+        return
+    job_service = JobService(session)
+    job = job_service.get_job(related_job_id)
+    if job.status != "running":
+        return
+    job_service.update_progress(related_job_id, message=message)
+
+
+async def process_asset_metadata(
+    _: dict[str, object], asset_id: str, job_id: str | None = None
+) -> None:
+    related_job_id = UUID(job_id) if job_id else None
     with Session(engine) as session:
+        notification_service = NotificationService(session)
+
+        def notify_processing_error(
+            *,
+            message: str,
+            asset_id_value: UUID | None = None,
+            details: dict[str, str] | None = None,
+        ) -> None:
+            notification_service.create_notification(
+                level=NotificationLevel.ERROR,
+                category=NotificationCategory.ASSET,
+                title="Asset processing failed",
+                message=message,
+                details=details,
+                related_job_id=related_job_id,
+                related_asset_id=asset_id_value,
+            )
+
         asset = session.get(Asset, UUID(asset_id))
         if asset is None:
+            logger.warning("Asset %s disappeared before metadata processing", asset_id)
+            if related_job_id is not None:
+                _update_parent_job_message(
+                    session=session,
+                    related_job_id=related_job_id,
+                    message="A background asset could not be processed.",
+                )
+                notify_processing_error(
+                    message="The asset no longer exists for metadata processing.",
+                    details={"asset_id": asset_id},
+                )
             return
 
         try:
             original_path = master_path_to_source_path(asset.master_path)
         except ValueError:
+            logger.warning(
+                "Asset %s has invalid master path %s", asset.id, asset.master_path
+            )
+            _update_parent_job_message(
+                session=session,
+                related_job_id=related_job_id,
+                message="A background asset could not be processed.",
+            )
+            notify_processing_error(
+                message="The asset source path is invalid.",
+                asset_id_value=asset.id,
+                details={"master_path": asset.master_path},
+            )
             return
         if not original_path.is_file():
+            logger.warning(
+                "Asset %s source file is missing at %s", asset.id, original_path
+            )
+            _update_parent_job_message(
+                session=session,
+                related_job_id=related_job_id,
+                message="A background asset could not be processed.",
+            )
+            notify_processing_error(
+                message="The asset source file is missing.",
+                asset_id_value=asset.id,
+                details={"master_path": asset.master_path},
+            )
             return
 
         if is_supported_video_mime_type(asset.mime_type):
@@ -177,6 +249,16 @@ async def process_asset_metadata(_: dict[str, object], asset_id: str) -> None:
                 _remove_video_preview(asset.id)
                 session.add(asset)
                 session.commit()
+                _update_parent_job_message(
+                    session=session,
+                    related_job_id=related_job_id,
+                    message="A background asset could not be processed.",
+                )
+                notify_processing_error(
+                    message="Video metadata inspection failed.",
+                    asset_id_value=asset.id,
+                    details={"master_path": asset.master_path},
+                )
                 return
             asset.width = video_metadata.width
             asset.height = video_metadata.height
@@ -208,6 +290,16 @@ async def process_asset_metadata(_: dict[str, object], asset_id: str) -> None:
                 session.commit()
                 logger.exception(
                     "Failed to generate video preview for asset %s", asset.id
+                )
+                _update_parent_job_message(
+                    session=session,
+                    related_job_id=related_job_id,
+                    message="A background asset could not be processed.",
+                )
+                notify_processing_error(
+                    message="Video preview generation failed.",
+                    asset_id_value=asset.id,
+                    details={"master_path": asset.master_path},
                 )
                 return
             asset.preview_status = VIDEO_PREVIEW_STATUS_READY

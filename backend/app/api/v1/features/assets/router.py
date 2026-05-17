@@ -18,6 +18,8 @@ from sqlmodel import Field, SQLModel
 
 from app.core.auth import get_current_user
 from app.models import Asset, User
+from app.services.jobs.schemas import JobRead
+from app.services.jobs.service import JobService, get_job_service
 from app.services.assets.media import (
     MEDIA_PROCESSED_DIR,
     is_supported_video_mime_type,
@@ -122,10 +124,6 @@ class AssetUpdateRequest(SQLModel):
     captured_at: datetime | None = None
     description: str | None = None
     is_favorite: bool | None = None
-
-
-class AssetScanResponse(SQLModel):
-    queued_job: bool
 
 
 def _thumbnail_url(request: Request, asset_id: UUID, variant: str) -> str:
@@ -273,16 +271,15 @@ async def upload_asset(
     return _build_ingest_response(request, result.asset, result.queued_job)
 
 
-@router.post(
-    "/scan", response_model=AssetScanResponse, status_code=status.HTTP_202_ACCEPTED
-)
+@router.post("/scan", response_model=JobRead, status_code=status.HTTP_202_ACCEPTED)
 async def scan_assets(
     asset_service: AssetService = Depends(get_asset_service),
+    job_service: JobService = Depends(get_job_service),
     current_user: User = Depends(get_current_user),
-) -> AssetScanResponse:
-    del current_user
-    result: AssetScanEnqueueResult = await asset_service.enqueue_scan()
-    return AssetScanResponse(queued_job=result.queued_job)
+) -> JobRead:
+    result: AssetScanEnqueueResult = await asset_service.enqueue_scan(current_user.id)
+    job = job_service.get_job(result.job_id)
+    return JobRead.model_validate(job, from_attributes=True)
 
 
 @router.get("", response_model=AssetListResponse, include_in_schema=False)
