@@ -3,7 +3,7 @@ import type {
   AssetDetail,
   AssetIngestResponse,
   AssetListResponse,
-  AssetScanResponse,
+  Job,
   AssetUpdatePayload,
 } from "@/lib/types";
 
@@ -44,7 +44,7 @@ export function ingestPath(filePath: string) {
 }
 
 export function scanAssets() {
-  return apiRequest<AssetScanResponse>("/api/v1/assets/scan", {
+  return apiRequest<Job>("/api/v1/assets/scan", {
     method: "POST",
     auth: true,
     contentType: null,

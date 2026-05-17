@@ -9,17 +9,19 @@ import {
   Star,
   Trash2,
   Upload,
-  UserRound,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 
+import { AppShell } from "@/components/app-shell";
 import { AssetDetailModal } from "@/components/asset-detail-modal";
 import { FileDropzone } from "@/components/file-dropzone";
+import { LoginScreen } from "@/components/login-screen";
 import { useToast } from "@/components/toast-provider";
 import { deleteAsset, ingestPath, listAssets, scanAssets, updateAsset, uploadAsset } from "@/lib/api/assets";
 import { fetchCurrentUser, getStoredUser, login, logout, refreshSession } from "@/lib/api/auth";
 import { clearSession, loadSession } from "@/lib/auth-store";
-import type { AssetListItem, AssetListResponse, User } from "@/lib/types";
+import { useSessionBootstrap } from "@/lib/use-session-bootstrap";
+import type { AssetListItem, AssetListResponse } from "@/lib/types";
 
 const PAGE_SIZE = 24;
 
@@ -41,68 +43,12 @@ function placeholderStyle(seed: string) {
   };
 }
 
-type LoginFormState = {
-  username: string;
-  password: string;
-};
-
 export function DeveloperDashboard() {
-  const queryClient = useQueryClient();
+  const { queryClient, isBootstrapping, accessReady, setAccessReady, currentUser } =
+    useSessionBootstrap();
   const { pushToast } = useToast();
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
   const [pathValue, setPathValue] = useState("");
-  const [loginForm, setLoginForm] = useState<LoginFormState>({ username: "", password: "" });
-  const [isBootstrapping, setIsBootstrapping] = useState(true);
-  const [accessReady, setAccessReady] = useState(Boolean(loadSession()));
-
-  useEffect(() => {
-    let cancelled = false;
-
-    const bootstrap = async () => {
-      const stored = loadSession();
-      if (!stored) {
-        if (!cancelled) {
-          setAccessReady(false);
-          setIsBootstrapping(false);
-        }
-        return;
-      }
-
-      try {
-        if (stored.expiresAt <= Date.now()) {
-          await refreshSession();
-        }
-        await queryClient.prefetchQuery({
-          queryKey: ["auth", "me"],
-          queryFn: fetchCurrentUser,
-        });
-        if (!cancelled) {
-          setAccessReady(true);
-        }
-      } catch {
-        clearSession();
-        if (!cancelled) {
-          setAccessReady(false);
-        }
-      } finally {
-        if (!cancelled) {
-          setIsBootstrapping(false);
-        }
-      }
-    };
-
-    void bootstrap();
-    return () => {
-      cancelled = true;
-    };
-  }, [queryClient]);
-
-  const currentUserQuery = useQuery({
-    queryKey: ["auth", "me"],
-    queryFn: fetchCurrentUser,
-    enabled: accessReady,
-    initialData: getStoredUser() ?? undefined,
-  });
 
   const assetsQuery = useInfiniteQuery({
     queryKey: ["assets"],
@@ -119,36 +65,10 @@ export function DeveloperDashboard() {
   const assets = useMemo(() => assetPages.flatMap((page) => page.items), [assetPages]);
   const totalAssets = assetPages[0]?.total ?? 0;
 
-  const loginMutation = useMutation({
-    mutationFn: login,
-    onSuccess: async () => {
-      setAccessReady(true);
-      await queryClient.invalidateQueries({ queryKey: ["auth", "me"] });
-      await queryClient.invalidateQueries({ queryKey: ["assets"] });
-      pushToast("Login complete", "success");
-    },
-    onError: (error: Error) => {
-      pushToast(error.message, "error");
-    },
-  });
-
-  const logoutMutation = useMutation({
-    mutationFn: logout,
-    onSuccess: async () => {
-      clearSession();
-      setAccessReady(false);
-      setSelectedAssetId(null);
-      queryClient.removeQueries({ queryKey: ["assets"] });
-      queryClient.removeQueries({ queryKey: ["auth", "me"] });
-      pushToast("Signed out", "info");
-    },
-  });
-
   const scanMutation = useMutation({
     mutationFn: scanAssets,
     onSuccess: async (data) => {
-      pushToast(`Scan started. ${data.enqueued_jobs} new jobs enqueued.`, "success");
-      await queryClient.invalidateQueries({ queryKey: ["assets"] });
+      pushToast(`Scan job queued: ${data.id.slice(0, 8)}`, "success");
     },
     onError: (error: Error) => pushToast(error.message, "error"),
   });
@@ -250,8 +170,6 @@ export function DeveloperDashboard() {
     },
   });
 
-  const currentUser = currentUserQuery.data as User | undefined;
-
   if (isBootstrapping) {
     return (
       <main className="flex min-h-screen items-center justify-center">
@@ -265,97 +183,39 @@ export function DeveloperDashboard() {
 
   if (!accessReady || !currentUser) {
     return (
-      <main className="flex min-h-screen items-center justify-center p-6">
-        <section className="w-full max-w-md rounded-[28px] border border-white/10 bg-ink-900/90 p-8 shadow-panel backdrop-blur">
-          <div className="mb-8 space-y-3">
-            <span className="inline-flex rounded-full border border-cyan-400/20 bg-cyan-400/10 px-3 py-1 text-xs uppercase tracking-[0.24em] text-cyan-300">
-              Developer Dashboard
-            </span>
-            <h1 className="text-3xl font-semibold text-white">FastAPI Photo Manager Ops</h1>
-            <p className="text-sm leading-6 text-slate-400">
-              Authenticate with your API user to trigger scans, push uploads, and inspect asset metadata.
-            </p>
-          </div>
-
-          <form
-            className="space-y-4"
-            onSubmit={(event) => {
-              event.preventDefault();
-              loginMutation.mutate(loginForm);
-            }}
-          >
-            <label className="block space-y-2">
-              <span className="text-xs uppercase tracking-[0.2em] text-slate-500">Username</span>
-              <input
-                value={loginForm.username}
-                onChange={(event) => setLoginForm((current) => ({ ...current, username: event.target.value }))}
-                className="w-full rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-white outline-none transition focus:border-cyan-400/50"
-                placeholder="testuser"
-              />
-            </label>
-
-            <label className="block space-y-2">
-              <span className="text-xs uppercase tracking-[0.2em] text-slate-500">Password</span>
-              <input
-                type="password"
-                value={loginForm.password}
-                onChange={(event) => setLoginForm((current) => ({ ...current, password: event.target.value }))}
-                className="w-full rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-white outline-none transition focus:border-cyan-400/50"
-                placeholder="••••••••"
-              />
-            </label>
-
-            <button
-              type="submit"
-              disabled={loginMutation.isPending}
-              className="flex w-full items-center justify-center gap-2 rounded-2xl bg-cyan-400 px-4 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {loginMutation.isPending ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <UserRound className="h-4 w-4" />}
-              Sign In
-            </button>
-          </form>
-        </section>
-      </main>
+      <LoginScreen
+        onLoggedIn={async () => {
+          setAccessReady(true);
+          await queryClient.invalidateQueries({ queryKey: ["auth", "me"] });
+          await queryClient.invalidateQueries({ queryKey: ["assets"] });
+        }}
+      />
     );
   }
 
   return (
     <>
-      <main className="min-h-screen bg-mesh-grid bg-grid-size">
-        <div className="mx-auto flex max-w-7xl flex-col gap-6 px-4 py-4 md:px-6 lg:px-8">
-          <header className="rounded-[28px] border border-white/10 bg-black/25 px-6 py-5 shadow-panel backdrop-blur">
-            <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-              <div>
-                <p className="text-xs uppercase tracking-[0.24em] text-cyan-300">Photo Manager</p>
-                <h1 className="mt-2 text-2xl font-semibold text-white">Developer Dashboard</h1>
-                <p className="mt-2 text-sm text-slate-400">
-                  Signed in as <span className="text-slate-200">{currentUser.username}</span>. Manage ingestion and inspect assets from a single screen.
-                </p>
-              </div>
-
-              <div className="flex flex-wrap items-center gap-3">
-                <button
-                  type="button"
-                  onClick={() => scanMutation.mutate()}
-                  disabled={scanMutation.isPending}
-                  className="flex items-center gap-2 rounded-2xl border border-cyan-400/30 bg-cyan-400/10 px-4 py-3 text-sm text-cyan-200 transition hover:bg-cyan-400/20 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {scanMutation.isPending ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <SearchCheck className="h-4 w-4" />}
-                  Bulk Scan
-                </button>
-                <button
-                  type="button"
-                  onClick={() => logoutMutation.mutate()}
-                  className="flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-slate-300 transition hover:bg-white/[0.07]"
-                >
-                  <LogOut className="h-4 w-4" />
-                  Logout
-                </button>
-              </div>
-            </div>
-          </header>
-
-          <div className="grid gap-6 lg:grid-cols-[340px_minmax(0,1fr)]">
+      <AppShell
+        currentUser={currentUser}
+        title="Developer Dashboard"
+        description="Manage ingestion and inspect assets from a single screen."
+        headerActions={
+          <button
+            type="button"
+            onClick={() => scanMutation.mutate()}
+            disabled={scanMutation.isPending}
+            className="flex items-center gap-2 rounded-2xl border border-cyan-400/30 bg-cyan-400/10 px-4 py-3 text-sm text-cyan-200 transition hover:bg-cyan-400/20 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {scanMutation.isPending ? (
+              <LoaderCircle className="h-4 w-4 animate-spin" />
+            ) : (
+              <SearchCheck className="h-4 w-4" />
+            )}
+            Bulk Scan
+          </button>
+        }
+      >
+        <div className="grid gap-6 lg:grid-cols-[340px_minmax(0,1fr)]">
             <aside className="space-y-6">
               <section className="rounded-[28px] border border-white/10 bg-black/25 p-5 shadow-panel backdrop-blur">
                 <div className="mb-4 flex items-center gap-3">
@@ -513,8 +373,7 @@ export function DeveloperDashboard() {
               ) : null}
             </section>
           </div>
-        </div>
-      </main>
+      </AppShell>
 
       <AssetDetailModal assetId={selectedAssetId} onClose={() => setSelectedAssetId(null)} />
     </>

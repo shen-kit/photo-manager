@@ -2,6 +2,8 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { X } from "lucide-react";
+import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 
 import { getAsset } from "@/lib/api/assets";
 
@@ -11,22 +13,34 @@ type AssetDetailModalProps = {
 };
 
 export function AssetDetailModal({ assetId, onClose }: AssetDetailModalProps) {
+  const [mounted, setMounted] = useState(false);
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ["asset", assetId],
     queryFn: () => getAsset(assetId as string),
     enabled: Boolean(assetId),
   });
 
-  if (!assetId) {
+  useEffect(() => {
+    setMounted(true);
+    return () => setMounted(false);
+  }, []);
+
+  if (!assetId || !mounted) {
     return null;
   }
 
   const isVideo = Boolean(data?.mime_type?.startsWith("video/"));
   const isVideoPreviewReady = data?.preview_status === "ready";
 
-  return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
-      <div className="flex h-[85vh] w-full max-w-4xl flex-col overflow-hidden rounded-3xl border border-white/10 bg-ink-900 shadow-panel">
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[110] flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        className="flex h-[85vh] w-full max-w-4xl flex-col overflow-hidden rounded-3xl border border-white/10 bg-ink-900 shadow-panel"
+        onClick={(event) => event.stopPropagation()}
+      >
         <div className="flex items-center justify-between border-b border-white/10 px-6 py-4">
           <div>
             <h2 className="text-lg font-semibold text-white">Asset Metadata</h2>
@@ -77,5 +91,7 @@ export function AssetDetailModal({ assetId, onClose }: AssetDetailModalProps) {
         </div>
       </div>
     </div>
+    ,
+    document.body,
   );
 }

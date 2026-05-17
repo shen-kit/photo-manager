@@ -4,6 +4,10 @@ export type User = {
   is_active: boolean;
 };
 
+export type JobStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+export type NotificationLevel = "info" | "success" | "warning" | "error";
+export type NotificationCategory = "scan" | "asset" | "worker" | "face" | "search" | "system";
+
 export type AuthResponse = {
   access_token: string;
   token_type: string;
@@ -93,10 +97,32 @@ export type AssetIngestResponse = {
   queued_job: boolean;
 };
 
-export type AssetScanResponse = {
-  scanned_files: number;
-  already_ingested: number;
-  enqueued_jobs: number;
+export type Job = {
+  id: string;
+  type: string;
+  status: JobStatus;
+  progress_current: number;
+  progress_total: number | null;
+  progress_message: string | null;
+  parameters: Record<string, unknown> | null;
+  result: Record<string, unknown> | null;
+  error_message: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+};
+
+export type Notification = {
+  id: string;
+  level: NotificationLevel;
+  category: NotificationCategory;
+  title: string;
+  message: string | null;
+  details: Record<string, unknown> | null;
+  related_job_id: string | null;
+  related_asset_id: string | null;
+  created_at: string;
+  read_at: string | null;
 };
 
 export type AssetUpdatePayload = {
