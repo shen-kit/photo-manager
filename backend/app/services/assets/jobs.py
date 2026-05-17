@@ -40,8 +40,12 @@ def _extract_exif_data(image: Image.Image) -> dict[str, str]:
     return extracted
 
 
-def _parse_captured_timestamps(exif_data: dict[str, str]) -> tuple[datetime | None, str | None]:
-    raw_timestamp = next((exif_data[tag] for tag in EXIF_DATETIME_TAGS if exif_data.get(tag)), None)
+def _parse_captured_timestamps(
+    exif_data: dict[str, str],
+) -> tuple[datetime | None, str | None]:
+    raw_timestamp = next(
+        (exif_data[tag] for tag in EXIF_DATETIME_TAGS if exif_data.get(tag)), None
+    )
     if raw_timestamp is None:
         return None, None
 
@@ -50,11 +54,15 @@ def _parse_captured_timestamps(exif_data: dict[str, str]) -> tuple[datetime | No
     except ValueError:
         return None, None
 
-    raw_offset = next((exif_data[tag].strip() for tag in EXIF_OFFSET_TAGS if exif_data.get(tag)), None)
+    raw_offset = next(
+        (exif_data[tag].strip() for tag in EXIF_OFFSET_TAGS if exif_data.get(tag)), None
+    )
     if raw_offset:
         normalized_offset = raw_offset.replace("Z", "+00:00")
         try:
-            local_with_offset = datetime.fromisoformat(f"{local_naive.isoformat()}{normalized_offset}")
+            local_with_offset = datetime.fromisoformat(
+                f"{local_naive.isoformat()}{normalized_offset}"
+            )
         except ValueError:
             return local_naive.replace(tzinfo=UTC), local_naive.isoformat()
         return local_with_offset.astimezone(UTC), local_with_offset.isoformat()
@@ -103,7 +111,9 @@ async def process_asset_metadata(_: dict[str, object], asset_id: str) -> None:
                 exif_data = {}
 
         asset.exif_data = exif_data or None
-        parsed_captured_at, parsed_captured_at_local = _parse_captured_timestamps(exif_data)
+        parsed_captured_at, parsed_captured_at_local = _parse_captured_timestamps(
+            exif_data
+        )
         if asset.captured_at is None and parsed_captured_at is not None:
             asset.captured_at = parsed_captured_at
         if asset.captured_at_local is None and parsed_captured_at_local is not None:
@@ -125,10 +135,14 @@ async def process_asset_metadata(_: dict[str, object], asset_id: str) -> None:
             asset.preview_status = VIDEO_PREVIEW_STATUS_PROCESSING
             session.add(asset)
             session.commit()
-        if not should_generate_small_in_api(asset.mime_type, asset.file_size_bytes or 0):
+        if not should_generate_small_in_api(
+            asset.mime_type, asset.file_size_bytes or 0
+        ):
             write_asset_variants(original_path, asset.id, ("small",), asset.mime_type)
 
-        asset.has_large_preview = should_generate_large_preview(asset.width, asset.height)
+        asset.has_large_preview = should_generate_large_preview(
+            asset.width, asset.height
+        )
         if asset.has_large_preview:
             write_asset_variants(original_path, asset.id, ("large",), asset.mime_type)
         else:
@@ -141,7 +155,9 @@ async def process_asset_metadata(_: dict[str, object], asset_id: str) -> None:
                 _remove_video_preview(asset.id)
                 session.add(asset)
                 session.commit()
-                logger.exception("Failed to generate video preview for asset %s", asset.id)
+                logger.exception(
+                    "Failed to generate video preview for asset %s", asset.id
+                )
                 return
             asset.preview_status = VIDEO_PREVIEW_STATUS_READY
 

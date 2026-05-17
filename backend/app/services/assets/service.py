@@ -75,7 +75,9 @@ def guess_mime_type(path: Path, uploaded_content_type: str | None = None) -> str
     return f"image/{detected}" if detected else "application/octet-stream"
 
 
-def _generate_fast_artifacts(asset_id: UUID, original_path: Path, include_small: bool) -> None:
+def _generate_fast_artifacts(
+    asset_id: UUID, original_path: Path, include_small: bool
+) -> None:
     try:
         with Session(engine) as session:
             asset = session.get(Asset, asset_id)
@@ -108,7 +110,9 @@ async def _enqueue_asset_job(asset_id: UUID) -> bool:
 
 
 class AssetService:
-    def __init__(self, session: Session, background_tasks: BackgroundTasks | None = None) -> None:
+    def __init__(
+        self, session: Session, background_tasks: BackgroundTasks | None = None
+    ) -> None:
         self.session = session
         self.background_tasks = background_tasks
 
@@ -116,19 +120,34 @@ class AssetService:
         try:
             return resolve_source_input(file_path)
         except FileNotFoundError as exc:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Original file was not found") from exc
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Original file was not found",
+            ) from exc
         except ValueError as exc:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+            ) from exc
 
-    async def save_upload_to_originals(self, upload: UploadFile) -> tuple[Path, str, str]:
+    async def save_upload_to_originals(
+        self, upload: UploadFile
+    ) -> tuple[Path, str, str]:
         filename = Path(upload.filename or f"{uuid4().hex}.bin")
         suffix = filename.suffix.lower()
         detected_content_type = upload.content_type
-        if not detected_content_type or detected_content_type == "application/octet-stream":
-            detected_content_type = mimetypes.guess_type(filename.name)[0] or "application/octet-stream"
+        if (
+            not detected_content_type
+            or detected_content_type == "application/octet-stream"
+        ):
+            detected_content_type = (
+                mimetypes.guess_type(filename.name)[0] or "application/octet-stream"
+            )
         if not is_supported_media_mime_type(detected_content_type):
             await upload.close()
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only image and video files are supported")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Only image and video files are supported",
+            )
 
         destination = (MEDIA_ORIGINALS_TMP_DIR / f"{uuid4().hex}.part").resolve()
 
@@ -136,7 +155,10 @@ class AssetService:
             destination.relative_to(MEDIA_ORIGINALS_DIR)
         except ValueError as exc:
             await upload.close()
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Upload destination escaped the originals root") from exc
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Upload destination escaped the originals root",
+            ) from exc
 
         destination.parent.mkdir(parents=True, exist_ok=True)
         digest = hashlib.sha256()
@@ -149,7 +171,10 @@ class AssetService:
                     await target.write(chunk)
         except OSError as exc:
             destination.unlink(missing_ok=True)
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to persist uploaded file") from exc
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to persist uploaded file",
+            ) from exc
         finally:
             await upload.close()
 
@@ -159,7 +184,10 @@ class AssetService:
             final_path.relative_to(MEDIA_ORIGINALS_DIR)
         except ValueError as exc:
             destination.unlink(missing_ok=True)
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Final upload path escaped the originals root") from exc
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Final upload path escaped the originals root",
+            ) from exc
 
         if final_path.exists():
             destination.unlink(missing_ok=True)
@@ -169,12 +197,21 @@ class AssetService:
             destination.rename(final_path)
         except OSError as exc:
             destination.unlink(missing_ok=True)
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to finalize uploaded file") from exc
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to finalize uploaded file",
+            ) from exc
 
         return final_path, file_hash, detected_content_type
 
-    async def upload_asset(self, upload: UploadFile, user_id: UUID) -> AssetProcessResult:
-        saved_path, file_hash, detected_content_type = await self.save_upload_to_originals(upload)
+    async def upload_asset(
+        self, upload: UploadFile, user_id: UUID
+    ) -> AssetProcessResult:
+        (
+            saved_path,
+            file_hash,
+            detected_content_type,
+        ) = await self.save_upload_to_originals(upload)
         return await self.process_new_asset(
             str(saved_path),
             user_id,
@@ -183,7 +220,9 @@ class AssetService:
             restore_deleted=True,
         )
 
-    async def ingest_asset_path(self, file_path: str, user_id: UUID) -> AssetProcessResult:
+    async def ingest_asset_path(
+        self, file_path: str, user_id: UUID
+    ) -> AssetProcessResult:
         return await self.process_new_asset(file_path, user_id, restore_deleted=True)
 
     async def scan_assets(self, user_id: UUID) -> AssetScanResult:
@@ -212,9 +251,16 @@ class AssetService:
             enqueued_jobs=enqueued_jobs,
         )
 
-    def list_assets(self, *, page: int, page_size: int) -> tuple[int, list[tuple[Asset, list[dict[str, Any]] | None, list[dict[str, Any]] | None]]]:
+    def list_assets(
+        self, *, page: int, page_size: int
+    ) -> tuple[
+        int,
+        list[tuple[Asset, list[dict[str, Any]] | None, list[dict[str, Any]] | None]],
+    ]:
         tags_subquery, faces_subquery = self._asset_relations_subqueries()
-        total = self.session.exec(select(func.count()).select_from(Asset).where(active_asset_where())).one()
+        total = self.session.exec(
+            select(func.count()).select_from(Asset).where(active_asset_where())
+        ).one()
         offset = (page - 1) * page_size
 
         statement = (
@@ -233,7 +279,9 @@ class AssetService:
         rows = self.session.exec(statement).all()
         return total, rows
 
-    def get_asset_detail(self, asset_id: UUID) -> tuple[Asset, list[dict[str, Any]] | None, list[dict[str, Any]] | None]:
+    def get_asset_detail(
+        self, asset_id: UUID
+    ) -> tuple[Asset, list[dict[str, Any]] | None, list[dict[str, Any]] | None]:
         tags_subquery, faces_subquery = self._asset_relations_subqueries()
         statement = (
             select(
@@ -247,10 +295,14 @@ class AssetService:
         )
         row = self.session.exec(statement).first()
         if row is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Asset not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Asset not found"
+            )
         return row
 
-    def update_asset(self, asset_id: UUID, updates: dict[str, Any]) -> tuple[Asset, list[dict[str, Any]] | None, list[dict[str, Any]] | None]:
+    def update_asset(
+        self, asset_id: UUID, updates: dict[str, Any]
+    ) -> tuple[Asset, list[dict[str, Any]] | None, list[dict[str, Any]] | None]:
         asset = self._get_active_asset_or_404(asset_id)
         for field_name, value in updates.items():
             setattr(asset, field_name, value)
@@ -278,11 +330,17 @@ class AssetService:
         relative_path, source_path = self.resolve_original_path(file_path)
         mime_type = guess_mime_type(source_path, uploaded_content_type)
         file_hash = precomputed_file_hash or self._compute_sha256(source_path)
-        existing_asset = self.session.exec(select(Asset).where(Asset.file_hash == file_hash)).first()
+        existing_asset = self.session.exec(
+            select(Asset).where(Asset.file_hash == file_hash)
+        ).first()
         if existing_asset is not None:
             if existing_asset.deleted_at is not None and restore_deleted:
-                width, height, video_metadata = self._inspect_media_or_raise(source_path, mime_type)
-                relative_path, source_path = self._ensure_canonical_original_location(source_path, file_hash)
+                width, height, video_metadata = self._inspect_media_or_raise(
+                    source_path, mime_type
+                )
+                relative_path, source_path = self._ensure_canonical_original_location(
+                    source_path, file_hash
+                )
                 return await self._restore_deleted_asset(
                     asset=existing_asset,
                     source_path=source_path,
@@ -300,10 +358,16 @@ class AssetService:
                 self.session.refresh(existing_asset)
                 queued_job = await _enqueue_asset_job(existing_asset.id)
             self._cleanup_duplicate_source(source_path, existing_asset.master_path)
-            return AssetProcessResult(asset=existing_asset, queued_job=queued_job, created_new=False)
+            return AssetProcessResult(
+                asset=existing_asset, queued_job=queued_job, created_new=False
+            )
 
-        width, height, video_metadata = self._inspect_media_or_raise(source_path, mime_type)
-        relative_path, source_path = self._ensure_canonical_original_location(source_path, file_hash)
+        width, height, video_metadata = self._inspect_media_or_raise(
+            source_path, mime_type
+        )
+        relative_path, source_path = self._ensure_canonical_original_location(
+            source_path, file_hash
+        )
 
         asset = Asset(
             file_hash=file_hash,
@@ -315,7 +379,9 @@ class AssetService:
             file_size_bytes=source_path.stat().st_size,
             video_codec=video_metadata.video_codec if video_metadata else None,
             audio_codec=video_metadata.audio_codec if video_metadata else None,
-            duration_seconds=video_metadata.duration_seconds if video_metadata else None,
+            duration_seconds=video_metadata.duration_seconds
+            if video_metadata
+            else None,
             preview_status=VIDEO_PREVIEW_STATUS_PENDING if video_metadata else None,
         )
         self.session.add(asset)
@@ -324,12 +390,18 @@ class AssetService:
             self.session.refresh(asset)
         except IntegrityError:
             self.session.rollback()
-            existing_asset = self.session.exec(select(Asset).where(Asset.file_hash == file_hash)).first()
+            existing_asset = self.session.exec(
+                select(Asset).where(Asset.file_hash == file_hash)
+            ).first()
             if existing_asset is None:
                 raise
             if existing_asset.deleted_at is not None and restore_deleted:
-                width, height, video_metadata = self._inspect_media_or_raise(source_path, mime_type)
-                relative_path, source_path = self._ensure_canonical_original_location(source_path, file_hash)
+                width, height, video_metadata = self._inspect_media_or_raise(
+                    source_path, mime_type
+                )
+                relative_path, source_path = self._ensure_canonical_original_location(
+                    source_path, file_hash
+                )
                 return await self._restore_deleted_asset(
                     asset=existing_asset,
                     source_path=source_path,
@@ -347,24 +419,36 @@ class AssetService:
                 self.session.refresh(existing_asset)
                 queued_job = await _enqueue_asset_job(existing_asset.id)
             self._cleanup_duplicate_source(source_path, existing_asset.master_path)
-            return AssetProcessResult(asset=existing_asset, queued_job=queued_job, created_new=False)
+            return AssetProcessResult(
+                asset=existing_asset, queued_job=queued_job, created_new=False
+            )
 
-        include_small = is_supported_video_mime_type(asset.mime_type) or should_generate_small_in_api(
+        include_small = is_supported_video_mime_type(
+            asset.mime_type
+        ) or should_generate_small_in_api(
             asset.mime_type,
             asset.file_size_bytes or 0,
         )
-        if is_supported_image_mime_type(asset.mime_type) or is_supported_video_mime_type(asset.mime_type):
+        if is_supported_image_mime_type(
+            asset.mime_type
+        ) or is_supported_video_mime_type(asset.mime_type):
             if self.background_tasks is None:
                 _generate_fast_artifacts(asset.id, source_path, include_small)
             else:
-                self.background_tasks.add_task(_generate_fast_artifacts, asset.id, source_path, include_small)
+                self.background_tasks.add_task(
+                    _generate_fast_artifacts, asset.id, source_path, include_small
+                )
         queued_job = await _enqueue_asset_job(asset.id)
         return AssetProcessResult(asset=asset, queued_job=queued_job, created_new=True)
 
     def _get_active_asset_or_404(self, asset_id: UUID) -> Asset:
-        asset = self.session.exec(select(Asset).where(Asset.id == asset_id, active_asset_where())).first()
+        asset = self.session.exec(
+            select(Asset).where(Asset.id == asset_id, active_asset_where())
+        ).first()
         if asset is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Asset not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Asset not found"
+            )
         return asset
 
     def _asset_relations_subqueries(self) -> tuple[Any, Any]:
@@ -426,7 +510,9 @@ class AssetService:
             return True
         return not processed_video_preview_path(asset.id).is_file()
 
-    def _inspect_media_or_raise(self, source_path: Path, mime_type: str) -> tuple[int | None, int | None, MediaInspection | None]:
+    def _inspect_media_or_raise(
+        self, source_path: Path, mime_type: str
+    ) -> tuple[int | None, int | None, MediaInspection | None]:
         try:
             if is_supported_video_mime_type(mime_type):
                 video_metadata = inspect_video(source_path)
@@ -436,13 +522,18 @@ class AssetService:
         except ValueError as exc:
             self._cleanup_temporary_source(source_path)
             logger.warning("Rejecting unsupported asset: %s", source_path)
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"{str(exc)}\nAsset path: {source_path}") from exc
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"{str(exc)}\nAsset path: {source_path}",
+            ) from exc
 
     def _cleanup_temporary_source(self, source_path: Path) -> None:
         if is_temporary_original_path(source_path):
             source_path.unlink(missing_ok=True)
 
-    def _cleanup_duplicate_source(self, source_path: Path, existing_master_path: str) -> None:
+    def _cleanup_duplicate_source(
+        self, source_path: Path, existing_master_path: str
+    ) -> None:
         self._cleanup_temporary_source(source_path)
 
         try:
@@ -455,11 +546,16 @@ class AssetService:
         except ValueError:
             return
 
-        if source_path == existing_source_path or source_master_path == existing_master_path:
+        if (
+            source_path == existing_source_path
+            or source_master_path == existing_master_path
+        ):
             return
         source_path.unlink(missing_ok=True)
 
-    def _ensure_canonical_original_location(self, source_path: Path, file_hash: str) -> tuple[str, Path]:
+    def _ensure_canonical_original_location(
+        self, source_path: Path, file_hash: str
+    ) -> tuple[str, Path]:
         if is_canonical_hashed_original(source_path, file_hash):
             return source_path_to_master_path(source_path), source_path
 
@@ -500,22 +596,30 @@ class AssetService:
         asset.file_size_bytes = source_path.stat().st_size
         asset.video_codec = video_metadata.video_codec if video_metadata else None
         asset.audio_codec = video_metadata.audio_codec if video_metadata else None
-        asset.duration_seconds = video_metadata.duration_seconds if video_metadata else None
+        asset.duration_seconds = (
+            video_metadata.duration_seconds if video_metadata else None
+        )
         asset.preview_status = VIDEO_PREVIEW_STATUS_PENDING if video_metadata else None
         asset.deleted_at = None
         self.session.add(asset)
         self.session.commit()
         self.session.refresh(asset)
 
-        include_small = is_supported_video_mime_type(asset.mime_type) or should_generate_small_in_api(
+        include_small = is_supported_video_mime_type(
+            asset.mime_type
+        ) or should_generate_small_in_api(
             asset.mime_type,
             asset.file_size_bytes or 0,
         )
-        if is_supported_image_mime_type(asset.mime_type) or is_supported_video_mime_type(asset.mime_type):
+        if is_supported_image_mime_type(
+            asset.mime_type
+        ) or is_supported_video_mime_type(asset.mime_type):
             if self.background_tasks is None:
                 _generate_fast_artifacts(asset.id, source_path, include_small)
             else:
-                self.background_tasks.add_task(_generate_fast_artifacts, asset.id, source_path, include_small)
+                self.background_tasks.add_task(
+                    _generate_fast_artifacts, asset.id, source_path, include_small
+                )
         queued_job = await _enqueue_asset_job(asset.id)
         return AssetProcessResult(asset=asset, queued_job=queued_job, created_new=False)
 

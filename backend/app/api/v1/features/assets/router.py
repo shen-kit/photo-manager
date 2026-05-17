@@ -4,12 +4,25 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    Request,
+    Response,
+    UploadFile,
+    status,
+)
 from sqlmodel import Field, SQLModel
 
 from app.core.auth import get_current_user
 from app.models import Asset, User
-from app.services.assets.media import MEDIA_PROCESSED_DIR, is_supported_video_mime_type, processed_video_preview_path
+from app.services.assets.media import (
+    MEDIA_PROCESSED_DIR,
+    is_supported_video_mime_type,
+    processed_video_preview_path,
+)
 from app.services.assets.service import AssetScanResult, AssetService, get_asset_service
 
 router = APIRouter()
@@ -114,7 +127,10 @@ class AssetScanResponse(SQLModel):
 
 
 def _thumbnail_url(request: Request, asset_id: UUID, variant: str) -> str:
-    return str(request.base_url).rstrip("/") + f"/media/processed/assets/{asset_id}/{variant}.webp"
+    return (
+        str(request.base_url).rstrip("/")
+        + f"/media/processed/assets/{asset_id}/{variant}.webp"
+    )
 
 
 def _original_asset_url(request: Request, master_path: str) -> str:
@@ -125,14 +141,22 @@ def _original_asset_url(request: Request, master_path: str) -> str:
 
 def _detail_image_url(request: Request, asset: Asset) -> str:
     if is_supported_video_mime_type(asset.mime_type):
-        relative_preview = processed_video_preview_path(asset.id).relative_to(MEDIA_PROCESSED_DIR).as_posix()
-        return str(request.base_url).rstrip("/") + f"/media/processed/{relative_preview}"
+        relative_preview = (
+            processed_video_preview_path(asset.id)
+            .relative_to(MEDIA_PROCESSED_DIR)
+            .as_posix()
+        )
+        return (
+            str(request.base_url).rstrip("/") + f"/media/processed/{relative_preview}"
+        )
     if asset.has_large_preview:
         return _thumbnail_url(request, asset.id, "large")
     return _original_asset_url(request, asset.master_path)
 
 
-def _build_ingest_response(request: Request, asset: Asset, queued_job: bool) -> AssetIngestResponse:
+def _build_ingest_response(
+    request: Request, asset: Asset, queued_job: bool
+) -> AssetIngestResponse:
     return AssetIngestResponse(
         id=asset.id,
         file_hash=asset.file_hash,
@@ -198,7 +222,9 @@ def _build_face_models(rows: list[dict[str, Any]] | None) -> list[FaceSummary]:
         faces.append(
             FaceSummary(
                 id=row["id"],
-                person=PersonSummary(id=person_id, name=person_name) if person_id or person_name else None,
+                person=PersonSummary(id=person_id, name=person_name)
+                if person_id or person_name
+                else None,
             )
         )
     return faces
@@ -210,11 +236,15 @@ def _build_people_models(rows: list[dict[str, Any]] | None) -> list[PersonSummar
         person_id = row.get("person_id")
         if person_id is None or person_id in unique_people:
             continue
-        unique_people[person_id] = PersonSummary(id=person_id, name=row.get("person_name"))
+        unique_people[person_id] = PersonSummary(
+            id=person_id, name=row.get("person_name")
+        )
     return list(unique_people.values())
 
 
-@router.post("/ingest", response_model=AssetIngestResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/ingest", response_model=AssetIngestResponse, status_code=status.HTTP_201_CREATED
+)
 async def ingest_asset(
     payload: AssetIngestPathRequest,
     request: Request,
@@ -225,7 +255,9 @@ async def ingest_asset(
     return _build_ingest_response(request, result.asset, result.queued_job)
 
 
-@router.post("/upload", response_model=AssetIngestResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/upload", response_model=AssetIngestResponse, status_code=status.HTTP_201_CREATED
+)
 async def upload_asset(
     response: Response,
     request: Request,
@@ -239,7 +271,9 @@ async def upload_asset(
     return _build_ingest_response(request, result.asset, result.queued_job)
 
 
-@router.post("/scan", response_model=AssetScanResponse, status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/scan", response_model=AssetScanResponse, status_code=status.HTTP_202_ACCEPTED
+)
 async def scan_assets(
     asset_service: AssetService = Depends(get_asset_service),
     current_user: User = Depends(get_current_user),
@@ -259,7 +293,10 @@ def list_assets(
 ) -> AssetListResponse:
     del current_user
     if page < 1 or page_size < 1 or page_size > 200:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid pagination parameters")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid pagination parameters",
+        )
 
     total, rows = asset_service.list_assets(page=page, page_size=page_size)
     items = [

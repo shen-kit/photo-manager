@@ -48,9 +48,15 @@ class AuthResponse(SQLModel):
 def _validate_credentials(username: str, password: str) -> tuple[str, str]:
     normalized_username = username.strip()
     if len(normalized_username) < 3:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Username must be at least 3 characters")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Username must be at least 3 characters",
+        )
     if len(password) < 8:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Password must be at least 8 characters")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password must be at least 8 characters",
+        )
     return normalized_username, password
 
 
@@ -66,7 +72,9 @@ def _issue_refresh_token(*, session: Session, user: User) -> str:
     return raw_token
 
 
-def _set_refresh_cookie(*, request: Request, response: Response, refresh_token: str) -> None:
+def _set_refresh_cookie(
+    *, request: Request, response: Response, refresh_token: str
+) -> None:
     response.set_cookie(
         key=REFRESH_COOKIE_NAME,
         value=refresh_token,
@@ -93,11 +101,15 @@ def _build_auth_response(user: User) -> AuthResponse:
     return AuthResponse(
         access_token=access_token,
         expires_in=int(ACCESS_TOKEN_TTL.total_seconds()),
-        user=UserResponse(id=str(user.id), username=user.username, is_active=user.is_active),
+        user=UserResponse(
+            id=str(user.id), username=user.username, is_active=user.is_active
+        ),
     )
 
 
-@router.post("/register", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/register", response_model=AuthResponse, status_code=status.HTTP_201_CREATED
+)
 def register(
     request: Request,
     payload: RegisterRequest,
@@ -108,7 +120,10 @@ def register(
 
     existing_user = session.exec(select(User).where(User.username == username)).first()
     if existing_user is not None:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Username is already registered")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Username is already registered",
+        )
 
     user = User(username=username, password_hash=hash_password(password))
     session.add(user)
@@ -129,11 +144,18 @@ def login(
     response: Response,
     session: Session = Depends(get_session),
 ) -> AuthResponse:
-    user = session.exec(select(User).where(User.username == payload.username.strip())).first()
+    user = session.exec(
+        select(User).where(User.username == payload.username.strip())
+    ).first()
     if user is None or not verify_password(payload.password, user.password_hash):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid username or password")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid username or password",
+        )
     if not user.is_active:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User account is inactive")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="User account is inactive"
+        )
 
     refresh_token = _issue_refresh_token(session=session, user=user)
     session.commit()
@@ -150,16 +172,29 @@ def refresh(
 ) -> AuthResponse:
     raw_refresh_token = request.cookies.get(REFRESH_COOKIE_NAME)
     if not raw_refresh_token:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing refresh token")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing refresh token"
+        )
 
     token_hash = hash_refresh_token(raw_refresh_token)
-    token_record = session.exec(select(RefreshToken).where(RefreshToken.token_hash == token_hash)).first()
-    if token_record is None or token_record.revoked_at is not None or token_record.expires_at <= utc_now():
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
+    token_record = session.exec(
+        select(RefreshToken).where(RefreshToken.token_hash == token_hash)
+    ).first()
+    if (
+        token_record is None
+        or token_record.revoked_at is not None
+        or token_record.expires_at <= utc_now()
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token"
+        )
 
     user = session.exec(select(User).where(User.id == token_record.user_id)).first()
     if user is None or not user.is_active:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found or inactive",
+        )
 
     new_raw_refresh_token = create_refresh_token()
     new_token_record = RefreshToken(
@@ -175,7 +210,9 @@ def refresh(
     session.add(token_record)
     session.commit()
 
-    _set_refresh_cookie(request=request, response=response, refresh_token=new_raw_refresh_token)
+    _set_refresh_cookie(
+        request=request, response=response, refresh_token=new_raw_refresh_token
+    )
     return _build_auth_response(user)
 
 
@@ -187,7 +224,9 @@ def logout(
     raw_refresh_token = request.cookies.get(REFRESH_COOKIE_NAME)
     if raw_refresh_token:
         token_hash = hash_refresh_token(raw_refresh_token)
-        token_record = session.exec(select(RefreshToken).where(RefreshToken.token_hash == token_hash)).first()
+        token_record = session.exec(
+            select(RefreshToken).where(RefreshToken.token_hash == token_hash)
+        ).first()
         if token_record is not None and token_record.revoked_at is None:
             token_record.revoked_at = utc_now()
             session.add(token_record)

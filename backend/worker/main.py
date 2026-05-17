@@ -11,7 +11,9 @@ from app.services.assets.jobs import process_asset_metadata
 
 class WorkerSettings:
     functions = [process_asset_metadata]
-    redis_settings = RedisSettings.from_dsn(os.getenv("REDIS_URL", "redis://redis:6379/0"))
+    redis_settings = RedisSettings.from_dsn(
+        os.getenv("REDIS_URL", "redis://redis:6379/0")
+    )
     queue_name = "arq:queue"
 
 

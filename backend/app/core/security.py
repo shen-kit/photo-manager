@@ -31,7 +31,9 @@ def get_jwt_secret() -> str:
 
 def hash_password(password: str) -> str:
     salt = secrets.token_bytes(16)
-    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, PBKDF2_ITERATIONS)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256", password.encode("utf-8"), salt, PBKDF2_ITERATIONS
+    )
     return "$".join(
         [
             "pbkdf2_sha256",
@@ -82,10 +84,16 @@ def create_access_token(*, user_id: UUID, username: str) -> str:
 
 def encode_jwt(payload: dict[str, Any]) -> str:
     header = {"alg": JWT_ALGORITHM, "typ": "JWT"}
-    encoded_header = _b64url_encode(json.dumps(header, separators=(",", ":"), sort_keys=True).encode("utf-8"))
-    encoded_payload = _b64url_encode(json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8"))
+    encoded_header = _b64url_encode(
+        json.dumps(header, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    )
+    encoded_payload = _b64url_encode(
+        json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    )
     signing_input = f"{encoded_header}.{encoded_payload}".encode("ascii")
-    signature = hmac.new(get_jwt_secret().encode("utf-8"), signing_input, hashlib.sha256).digest()
+    signature = hmac.new(
+        get_jwt_secret().encode("utf-8"), signing_input, hashlib.sha256
+    ).digest()
     encoded_signature = _b64url_encode(signature)
     return f"{encoded_header}.{encoded_payload}.{encoded_signature}"
 
@@ -97,7 +105,9 @@ def decode_access_token(token: str) -> dict[str, Any]:
         raise ValueError("Malformed token") from exc
 
     signing_input = f"{encoded_header}.{encoded_payload}".encode("ascii")
-    expected_signature = hmac.new(get_jwt_secret().encode("utf-8"), signing_input, hashlib.sha256).digest()
+    expected_signature = hmac.new(
+        get_jwt_secret().encode("utf-8"), signing_input, hashlib.sha256
+    ).digest()
     provided_signature = _b64url_decode(encoded_signature)
     if not hmac.compare_digest(expected_signature, provided_signature):
         raise ValueError("Invalid token signature")

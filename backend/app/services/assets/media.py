@@ -20,8 +20,12 @@ except ImportError:  # pragma: no cover - optional codec dependency
 if register_heif_opener is not None:
     register_heif_opener()
 
-MEDIA_ORIGINALS_DIR = Path(os.getenv("MEDIA_ORIGINALS_DIR", "/media/originals")).resolve()
-MEDIA_PROCESSED_DIR = Path(os.getenv("MEDIA_PROCESSED_DIR", "/media/processed")).resolve()
+MEDIA_ORIGINALS_DIR = Path(
+    os.getenv("MEDIA_ORIGINALS_DIR", "/media/originals")
+).resolve()
+MEDIA_PROCESSED_DIR = Path(
+    os.getenv("MEDIA_PROCESSED_DIR", "/media/processed")
+).resolve()
 MEDIA_ORIGINALS_TMP_DIR = MEDIA_ORIGINALS_DIR / ".tmp"
 THUMBNAIL_SPECS: dict[str, int] = {
     "tiny": 128,
@@ -67,7 +71,9 @@ def _resolve_within(root: Path, relative_path: Path) -> Path:
 
 
 def is_supported_media_mime_type(mime_type: str) -> bool:
-    return mime_type.startswith(SUPPORTED_IMAGE_MIME_PREFIX) or mime_type.startswith(SUPPORTED_VIDEO_MIME_PREFIX)
+    return mime_type.startswith(SUPPORTED_IMAGE_MIME_PREFIX) or mime_type.startswith(
+        SUPPORTED_VIDEO_MIME_PREFIX
+    )
 
 
 def is_supported_image_mime_type(mime_type: str) -> bool:
@@ -125,7 +131,12 @@ def is_temporary_original_path(path: Path) -> bool:
 def canonical_original_path(file_hash: str, suffix: str) -> Path:
     normalized_suffix = suffix.lower()
     now = datetime.now(timezone.utc)
-    return MEDIA_ORIGINALS_DIR / now.strftime("%Y") / now.strftime("%m") / f"{file_hash}{normalized_suffix}"
+    return (
+        MEDIA_ORIGINALS_DIR
+        / now.strftime("%Y")
+        / now.strftime("%m")
+        / f"{file_hash}{normalized_suffix}"
+    )
 
 
 def is_canonical_hashed_original(path: Path, file_hash: str) -> bool:
@@ -189,7 +200,8 @@ def inspect_video(path: Path) -> MediaInspection:
 
     video_stream = next(
         (
-            stream for stream in streams
+            stream
+            for stream in streams
             if isinstance(stream, dict) and stream.get("codec_type") == "video"
         ),
         None,
@@ -199,7 +211,8 @@ def inspect_video(path: Path) -> MediaInspection:
 
     audio_stream = next(
         (
-            stream for stream in streams
+            stream
+            for stream in streams
             if isinstance(stream, dict) and stream.get("codec_type") == "audio"
         ),
         None,
@@ -208,22 +221,33 @@ def inspect_video(path: Path) -> MediaInspection:
     width = video_stream.get("width")
     height = video_stream.get("height")
     format_payload = payload.get("format")
-    duration_raw = format_payload.get("duration") if isinstance(format_payload, dict) else None
+    duration_raw = (
+        format_payload.get("duration") if isinstance(format_payload, dict) else None
+    )
     try:
-        duration_seconds = max(float(duration_raw), 0.0) if duration_raw is not None else None
+        duration_seconds = (
+            max(float(duration_raw), 0.0) if duration_raw is not None else None
+        )
     except (TypeError, ValueError):
         duration_seconds = None
 
     return MediaInspection(
         width=width if isinstance(width, int) else None,
         height=height if isinstance(height, int) else None,
-        video_codec=video_stream.get("codec_name") if isinstance(video_stream.get("codec_name"), str) else None,
-        audio_codec=audio_stream.get("codec_name") if isinstance(audio_stream, dict) and isinstance(audio_stream.get("codec_name"), str) else None,
+        video_codec=video_stream.get("codec_name")
+        if isinstance(video_stream.get("codec_name"), str)
+        else None,
+        audio_codec=audio_stream.get("codec_name")
+        if isinstance(audio_stream, dict)
+        and isinstance(audio_stream.get("codec_name"), str)
+        else None,
         duration_seconds=duration_seconds,
     )
 
 
-def validate_supported_media(path: Path, mime_type: str) -> tuple[int | None, int | None]:
+def validate_supported_media(
+    path: Path, mime_type: str
+) -> tuple[int | None, int | None]:
     if not is_supported_media_mime_type(mime_type):
         raise ValueError("Only image and video files are supported")
     if is_supported_image_mime_type(mime_type):
@@ -247,7 +271,10 @@ def generate_blurhash_from_image(image: PILImage) -> str | None:
 
 
 def should_generate_small_in_api(mime_type: str, file_size_bytes: int) -> bool:
-    return mime_type in {"image/jpeg", "image/png"} and file_size_bytes < SMALL_THUMBNAIL_MAX_API_FILE_SIZE_BYTES
+    return (
+        mime_type in {"image/jpeg", "image/png"}
+        and file_size_bytes < SMALL_THUMBNAIL_MAX_API_FILE_SIZE_BYTES
+    )
 
 
 def should_generate_large_preview(width: int | None, height: int | None) -> bool:
@@ -296,7 +323,9 @@ def _load_preview_image(original_path: Path, mime_type: str) -> PILImage:
         return ImageOps.exif_transpose(image).convert("RGB").copy()
 
 
-def write_asset_variants(original_path: Path, asset_id: UUID, variants: tuple[str, ...], mime_type: str) -> None:
+def write_asset_variants(
+    original_path: Path, asset_id: UUID, variants: tuple[str, ...], mime_type: str
+) -> None:
     output_dir = processed_asset_dir(asset_id)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -305,7 +334,9 @@ def write_asset_variants(original_path: Path, asset_id: UUID, variants: tuple[st
         max_size = THUMBNAIL_SPECS[variant]
         rendered = normalized.copy()
         rendered.thumbnail((max_size, max_size))
-        rendered.save(output_dir / f"{variant}.webp", format="WEBP", quality=WEBP_QUALITY)
+        rendered.save(
+            output_dir / f"{variant}.webp", format="WEBP", quality=WEBP_QUALITY
+        )
 
 
 def write_video_preview(original_path: Path, asset_id: UUID) -> None:
@@ -345,7 +376,9 @@ def write_video_preview(original_path: Path, asset_id: UUID) -> None:
     )
 
 
-def build_fast_variants(original_path: Path, asset_id: UUID, *, include_small: bool, mime_type: str) -> str | None:
+def build_fast_variants(
+    original_path: Path, asset_id: UUID, *, include_small: bool, mime_type: str
+) -> str | None:
     output_dir = processed_asset_dir(asset_id)
     output_dir.mkdir(parents=True, exist_ok=True)
 

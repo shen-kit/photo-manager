@@ -4,7 +4,18 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import BigInteger, Column, DateTime, Float, ForeignKey, Index, Integer, Text, UniqueConstraint, desc
+from sqlalchemy import (
+    BigInteger,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    Text,
+    UniqueConstraint,
+    desc,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PGUUID
 from sqlalchemy.types import Boolean, UserDefinedType
 from sqlmodel import Field, SQLModel
@@ -34,20 +45,22 @@ class Ltree(UserDefinedType):
 class AIModel(SQLModel, table=True):
     __tablename__ = "ai_models"
     __table_args__ = (
-        UniqueConstraint("model_name", "version_tag", name="uq_ai_models_model_name_version_tag"),
+        UniqueConstraint(
+            "model_name", "version_tag", name="uq_ai_models_model_name_version_tag"
+        ),
     )
 
     id: int | None = Field(default=None, primary_key=True)
     model_name: str = Field(sa_column=Column(Text, nullable=False))
     version_tag: str = Field(sa_column=Column(Text, nullable=False))
-    vector_dimensions: int | None = Field(default=None, sa_column=Column(Integer, nullable=True))
+    vector_dimensions: int | None = Field(
+        default=None, sa_column=Column(Integer, nullable=True)
+    )
 
 
 class Asset(SQLModel, table=True):
     __tablename__ = "assets"
-    __table_args__ = (
-        Index("idx_assets_captured_at", desc("captured_at")),
-    )
+    __table_args__ = (Index("idx_assets_captured_at", desc("captured_at")),)
 
     id: UUID = Field(
         default_factory=uuid4,
@@ -60,7 +73,9 @@ class Asset(SQLModel, table=True):
         default=None,
         sa_column=Column(DateTime(timezone=True), nullable=True),
     )
-    captured_at_local: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
+    captured_at_local: str | None = Field(
+        default=None, sa_column=Column(Text, nullable=True)
+    )
     description: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
     is_favorite: bool = Field(
         default=False,
@@ -72,11 +87,17 @@ class Asset(SQLModel, table=True):
         default=False,
         sa_column=Column(Boolean, nullable=False, server_default="false"),
     )
-    file_size_bytes: int | None = Field(default=None, sa_column=Column(BigInteger, nullable=True))
+    file_size_bytes: int | None = Field(
+        default=None, sa_column=Column(BigInteger, nullable=True)
+    )
     video_codec: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
     audio_codec: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
-    duration_seconds: float | None = Field(default=None, sa_column=Column(Float, nullable=True))
-    preview_status: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
+    duration_seconds: float | None = Field(
+        default=None, sa_column=Column(Float, nullable=True)
+    )
+    preview_status: str | None = Field(
+        default=None, sa_column=Column(Text, nullable=True)
+    )
     exif_data: dict[str, Any] | None = Field(
         default=None,
         sa_column=Column(JSONB, nullable=True),
@@ -165,9 +186,7 @@ class Face(SQLModel, table=True):
 
 class Tag(SQLModel, table=True):
     __tablename__ = "tags"
-    __table_args__ = (
-        Index("idx_tags_path_gist", "path", postgresql_using="gist"),
-    )
+    __table_args__ = (Index("idx_tags_path_gist", "path", postgresql_using="gist"),)
 
     id: int | None = Field(default=None, primary_key=True)
     name: str = Field(sa_column=Column(Text, nullable=False))
