@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
-from pathlib import Path
 from uuid import UUID
 
 from PIL import Image, ImageOps
@@ -10,7 +9,10 @@ from sqlmodel import Session
 
 from app.core.database import engine
 from app.models import Asset
-from app.services.assets_media import (
+from app.services.assets.media import (
+    VIDEO_PREVIEW_STATUS_FAILED,
+    VIDEO_PREVIEW_STATUS_PROCESSING,
+    VIDEO_PREVIEW_STATUS_READY,
     inspect_video,
     is_supported_video_mime_type,
     master_path_to_source_path,
@@ -18,11 +20,8 @@ from app.services.assets_media import (
     processed_video_preview_path,
     should_generate_large_preview,
     should_generate_small_in_api,
-    VIDEO_PREVIEW_STATUS_FAILED,
-    VIDEO_PREVIEW_STATUS_PROCESSING,
-    VIDEO_PREVIEW_STATUS_READY,
-    write_video_preview,
     write_asset_variants,
+    write_video_preview,
 )
 
 EXIF_DATETIME_TAGS = ("36867", "306")

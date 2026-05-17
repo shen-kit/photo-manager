@@ -6,7 +6,7 @@ from arq import run_worker
 from arq.connections import RedisSettings
 
 from app.core.database import create_db_and_tables
-from app.services.assets_jobs import process_asset_metadata
+from app.services.assets.jobs import process_asset_metadata
 
 
 class WorkerSettings:

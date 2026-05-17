@@ -78,7 +78,7 @@ services:
       AI_CACHE_DIR: /cache/ai
       MEDIA_ORIGINALS_DIR: /media/originals
       MEDIA_PROCESSED_DIR: /media/processed
-    command: ["python", "worker.py"]
+    command: ["python", "-m", "worker.main"]
     volumes:
       - ./backend:/app
       - ./data/ai_cache:/cache/ai

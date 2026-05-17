@@ -6,24 +6,34 @@ import logging
 import mimetypes
 import os
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from uuid import UUID
+from typing import Any
+from uuid import UUID, uuid4
 
+import aiofiles
 from arq.connections import RedisSettings, create_pool
-from fastapi import BackgroundTasks, Depends, HTTPException, status
+from fastapi import BackgroundTasks, Depends, HTTPException, UploadFile, status
+from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from app.core.database import engine, get_session
-from app.models import Asset
-from app.services.assets_media import (
+from app.models import Asset, AssetTag, Face, Person, Tag
+from app.services.assets.media import (
+    MEDIA_ORIGINALS_DIR,
+    MEDIA_ORIGINALS_TMP_DIR,
     MediaInspection,
+    VIDEO_PREVIEW_STATUS_PENDING,
+    VIDEO_PREVIEW_STATUS_READY,
     build_fast_variants,
     canonical_original_path,
     inspect_video,
     is_canonical_hashed_original,
     is_supported_image_mime_type,
+    is_supported_media_mime_type,
     is_supported_video_mime_type,
+    is_temporary_original_path,
     master_path_to_source_path,
     processed_video_preview_path,
     resolve_source_input,
@@ -31,9 +41,6 @@ from app.services.assets_media import (
     should_generate_small_in_api,
     source_path_to_master_path,
     validate_supported_media,
-    VIDEO_PREVIEW_STATUS_PENDING,
-    VIDEO_PREVIEW_STATUS_READY,
-    is_temporary_original_path,
 )
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
@@ -45,6 +52,13 @@ class AssetProcessResult:
     asset: Asset
     queued_job: bool
     created_new: bool
+
+
+@dataclass(frozen=True)
+class AssetScanResult:
+    scanned_files: int
+    already_ingested: int
+    enqueued_jobs: int
 
 
 def active_asset_where():
@@ -78,7 +92,6 @@ def _generate_fast_artifacts(asset_id: UUID, original_path: Path, include_small:
             session.commit()
     except Exception:
         logger.exception("Failed to generate fast asset variants for %s", asset_id)
-        return
 
 
 async def _enqueue_asset_job(asset_id: UUID) -> bool:
@@ -106,6 +119,150 @@ class AssetService:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Original file was not found") from exc
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    async def save_upload_to_originals(self, upload: UploadFile) -> tuple[Path, str, str]:
+        filename = Path(upload.filename or f"{uuid4().hex}.bin")
+        suffix = filename.suffix.lower()
+        detected_content_type = upload.content_type
+        if not detected_content_type or detected_content_type == "application/octet-stream":
+            detected_content_type = mimetypes.guess_type(filename.name)[0] or "application/octet-stream"
+        if not is_supported_media_mime_type(detected_content_type):
+            await upload.close()
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only image and video files are supported")
+
+        destination = (MEDIA_ORIGINALS_TMP_DIR / f"{uuid4().hex}.part").resolve()
+
+        try:
+            destination.relative_to(MEDIA_ORIGINALS_DIR)
+        except ValueError as exc:
+            await upload.close()
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Upload destination escaped the originals root") from exc
+
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        digest = hashlib.sha256()
+
+        try:
+            await upload.seek(0)
+            async with aiofiles.open(destination, "wb") as target:
+                while chunk := await upload.read(1024 * 1024):
+                    digest.update(chunk)
+                    await target.write(chunk)
+        except OSError as exc:
+            destination.unlink(missing_ok=True)
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to persist uploaded file") from exc
+        finally:
+            await upload.close()
+
+        file_hash = digest.hexdigest()
+        final_path = canonical_original_path(file_hash, suffix)
+        try:
+            final_path.relative_to(MEDIA_ORIGINALS_DIR)
+        except ValueError as exc:
+            destination.unlink(missing_ok=True)
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Final upload path escaped the originals root") from exc
+
+        if final_path.exists():
+            destination.unlink(missing_ok=True)
+            return final_path, file_hash, detected_content_type
+
+        try:
+            destination.rename(final_path)
+        except OSError as exc:
+            destination.unlink(missing_ok=True)
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to finalize uploaded file") from exc
+
+        return final_path, file_hash, detected_content_type
+
+    async def upload_asset(self, upload: UploadFile, user_id: UUID) -> AssetProcessResult:
+        saved_path, file_hash, detected_content_type = await self.save_upload_to_originals(upload)
+        return await self.process_new_asset(
+            str(saved_path),
+            user_id,
+            uploaded_content_type=detected_content_type,
+            precomputed_file_hash=file_hash,
+            restore_deleted=True,
+        )
+
+    async def ingest_asset_path(self, file_path: str, user_id: UUID) -> AssetProcessResult:
+        return await self.process_new_asset(file_path, user_id, restore_deleted=True)
+
+    async def scan_assets(self, user_id: UUID) -> AssetScanResult:
+        scanned_files = 0
+        already_ingested = 0
+        enqueued_jobs = 0
+
+        for path in MEDIA_ORIGINALS_DIR.rglob("*"):
+            if not path.is_file() or path.name == ".gitkeep":
+                continue
+            if MEDIA_ORIGINALS_TMP_DIR in path.parents:
+                continue
+
+            scanned_files += 1
+            result = await self.process_new_asset(str(path), user_id)
+            if not result.created_new and result.asset.deleted_at is not None:
+                continue
+            if result.queued_job:
+                enqueued_jobs += 1
+            if not result.created_new:
+                already_ingested += 1
+
+        return AssetScanResult(
+            scanned_files=scanned_files,
+            already_ingested=already_ingested,
+            enqueued_jobs=enqueued_jobs,
+        )
+
+    def list_assets(self, *, page: int, page_size: int) -> tuple[int, list[tuple[Asset, list[dict[str, Any]] | None, list[dict[str, Any]] | None]]]:
+        tags_subquery, faces_subquery = self._asset_relations_subqueries()
+        total = self.session.exec(select(func.count()).select_from(Asset).where(active_asset_where())).one()
+        offset = (page - 1) * page_size
+
+        statement = (
+            select(
+                Asset,
+                tags_subquery.c.tags,
+                faces_subquery.c.faces,
+            )
+            .where(active_asset_where())
+            .outerjoin(tags_subquery, tags_subquery.c.asset_id == Asset.id)
+            .outerjoin(faces_subquery, faces_subquery.c.asset_id == Asset.id)
+            .order_by(Asset.captured_at.desc().nullslast(), Asset.created_at.desc())
+            .offset(offset)
+            .limit(page_size)
+        )
+        rows = self.session.exec(statement).all()
+        return total, rows
+
+    def get_asset_detail(self, asset_id: UUID) -> tuple[Asset, list[dict[str, Any]] | None, list[dict[str, Any]] | None]:
+        tags_subquery, faces_subquery = self._asset_relations_subqueries()
+        statement = (
+            select(
+                Asset,
+                tags_subquery.c.tags,
+                faces_subquery.c.faces,
+            )
+            .where(Asset.id == asset_id, active_asset_where())
+            .outerjoin(tags_subquery, tags_subquery.c.asset_id == Asset.id)
+            .outerjoin(faces_subquery, faces_subquery.c.asset_id == Asset.id)
+        )
+        row = self.session.exec(statement).first()
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Asset not found")
+        return row
+
+    def update_asset(self, asset_id: UUID, updates: dict[str, Any]) -> tuple[Asset, list[dict[str, Any]] | None, list[dict[str, Any]] | None]:
+        asset = self._get_active_asset_or_404(asset_id)
+        for field_name, value in updates.items():
+            setattr(asset, field_name, value)
+        self.session.add(asset)
+        self.session.commit()
+        return self.get_asset_detail(asset_id)
+
+    def delete_asset(self, asset_id: UUID) -> None:
+        asset = self._get_active_asset_or_404(asset_id)
+        asset.deleted_at = datetime.now(timezone.utc)
+        self.session.add(asset)
+        self.session.commit()
 
     async def process_new_asset(
         self,
@@ -204,6 +361,55 @@ class AssetService:
         queued_job = await _enqueue_asset_job(asset.id)
         return AssetProcessResult(asset=asset, queued_job=queued_job, created_new=True)
 
+    def _get_active_asset_or_404(self, asset_id: UUID) -> Asset:
+        asset = self.session.exec(select(Asset).where(Asset.id == asset_id, active_asset_where())).first()
+        if asset is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Asset not found")
+        return asset
+
+    def _asset_relations_subqueries(self) -> tuple[Any, Any]:
+        tags_subquery = (
+            select(
+                AssetTag.asset_id.label("asset_id"),
+                func.json_agg(
+                    func.json_build_object(
+                        "id",
+                        Tag.id,
+                        "name",
+                        Tag.name,
+                        "path",
+                        Tag.path,
+                    )
+                ).label("tags"),
+            )
+            .select_from(AssetTag)
+            .join(Tag, Tag.id == AssetTag.tag_id)
+            .group_by(AssetTag.asset_id)
+            .subquery()
+        )
+
+        faces_subquery = (
+            select(
+                Face.asset_id.label("asset_id"),
+                func.json_agg(
+                    func.json_build_object(
+                        "id",
+                        Face.id,
+                        "person_id",
+                        Person.id,
+                        "person_name",
+                        Person.name,
+                    )
+                ).label("faces"),
+            )
+            .select_from(Face)
+            .join(Person, Person.id == Face.person_id, isouter=True)
+            .group_by(Face.asset_id)
+            .subquery()
+        )
+
+        return tags_subquery, faces_subquery
+
     def _compute_sha256(self, path: Path) -> str:
         digest = hashlib.sha256()
         with path.open("rb") as source:
@@ -267,7 +473,7 @@ class AssetService:
 
         try:
             destination.parent.mkdir(parents=True, exist_ok=True)
-            _ = source_path.rename(destination)
+            source_path.rename(destination)
         except OSError as exc:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
