@@ -22,4 +22,8 @@ Notes:
 - `DATABASE_URL` is read from the backend environment, matching app runtime config.
 - Application startup does not run migrations or call `create_all()`. Schema changes must go through Alembic.
 - `ai_models` stores versioned model records by task; `ai_model_defaults` selects the active model per task.
+- Face recognition default model:
+  `SELECT d.task, d.model_id, m.model_name, m.version_tag, m.vector_dimensions, m.is_deprecated FROM ai_model_defaults d JOIN ai_models m ON m.id = d.model_id WHERE d.task = 'face_recognition';`
+- `faces` stores face-detection metadata separately from CLIP search embeddings, including bounding box JSON, optional face embedding, the producing `face_model_id`, and manual-review flags.
+- The seeded InsightFace `buffalo_l` registry entry is metadata only in this phase. InsightFace model packs are research/non-commercial use; verify license terms before enabling inference.
 - The first CLIP embedding run will download OpenCLIP weights if they are not already cached.

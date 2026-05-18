@@ -5,6 +5,7 @@ from sqlmodel import Session, select
 from app.models import AIModel, AIModelDefault
 
 AI_MODEL_TASK_CLIP_EMBEDDING = "clip_embedding"
+AI_MODEL_TASK_FACE_RECOGNITION = "face_recognition"
 AI_MODEL_TASK_UNKNOWN = "unknown"
 
 
