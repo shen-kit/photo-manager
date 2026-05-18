@@ -1,17 +1,17 @@
 from __future__ import annotations
 
 import logging
-import os
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
 
-from arq.connections import RedisSettings, create_pool
 from PIL import Image, ImageOps
 from sqlmodel import Session
 
 from app.core.database import engine
 from app.models import Asset
+from app.services.jobs.queue import enqueue_asset_embedding_job
+from app.services.jobs.queue import enqueue_asset_processing_job
 from app.services.jobs.service import JobService
 from app.services.notifications.service import NotificationService
 from app.services.notifications.types import NotificationCategory, NotificationLevel
@@ -33,30 +33,7 @@ from app.services.assets.media import (
 
 EXIF_DATETIME_TAGS = ("36867", "306")
 EXIF_OFFSET_TAGS = ("36881", "36880", "36882")
-REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 logger = logging.getLogger(__name__)
-
-
-async def enqueue_job(job_name: str, *args: object) -> bool:
-    try:
-        redis = await create_pool(RedisSettings.from_dsn(REDIS_URL))
-        try:
-            await redis.enqueue_job(job_name, *args)
-        finally:
-            await redis.aclose()
-    except Exception:
-        logger.exception("Failed to enqueue job %s", job_name)
-        return False
-    return True
-
-
-async def enqueue_asset_processing_job(
-    asset_id: UUID, job_id: UUID | None = None
-) -> bool:
-    logger.info("Queuing process metadata job for asset %s", asset_id)
-    if job_id is None:
-        return await enqueue_job("process_asset_metadata", str(asset_id))
-    return await enqueue_job("process_asset_metadata", str(asset_id), str(job_id))
 
 
 def _extract_exif_data(image: Image.Image) -> dict[str, str]:
@@ -107,14 +84,6 @@ def _remove_large_preview(asset_id: UUID) -> None:
 
 def _remove_video_preview(asset_id: UUID) -> None:
     processed_video_preview_path(asset_id).unlink(missing_ok=True)
-
-
-def _run_clip_embeddings(asset: Asset) -> None:
-    logger.info("CLIP embedding placeholder for asset %s", asset.id)
-
-
-def _run_facial_recognition(asset: Asset) -> None:
-    logger.info("Facial recognition placeholder for asset %s", asset.id)
 
 
 def _ensure_fast_artifacts(asset: Asset, original_path: Path) -> None:
@@ -304,8 +273,19 @@ async def process_asset_metadata(
                 return
             asset.preview_status = VIDEO_PREVIEW_STATUS_READY
 
-        _run_clip_embeddings(asset)
-        _run_facial_recognition(asset)
-
         session.add(asset)
         session.commit()
+        queued_embedding_job = await enqueue_asset_embedding_job(asset.id)
+        if not queued_embedding_job:
+            logger.warning(
+                "Failed to enqueue CLIP embedding job for asset %s", asset.id
+            )
+            notification_service.create_notification(
+                level=NotificationLevel.WARNING,
+                category=NotificationCategory.SEARCH,
+                title="Embedding job failed to queue",
+                message="The asset metadata was processed, but semantic embedding generation was not queued.",
+                related_job_id=related_job_id,
+                related_asset_id=asset.id,
+                details={"asset_id": str(asset.id)},
+            )

@@ -4,6 +4,7 @@ from app.api.v1.features.auth import router as auth_router
 from app.api.v1.features.assets import router as assets_router
 from app.api.v1.features.jobs import router as jobs_router
 from app.api.v1.features.notifications import router as notifications_router
+from app.api.v1.features.search import router as search_router
 
 
 api_v1_router = APIRouter()
@@ -13,3 +14,4 @@ api_v1_router.include_router(jobs_router, prefix="/jobs", tags=["jobs"])
 api_v1_router.include_router(
     notifications_router, prefix="/notifications", tags=["notifications"]
 )
+api_v1_router.include_router(search_router, prefix="/search", tags=["search"])

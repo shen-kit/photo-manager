@@ -11,7 +11,8 @@ from sqlmodel import Session, select
 from app.core.database import engine
 from app.models import Asset
 from app.services.assets.hashing import compute_sha256
-from app.services.assets.jobs import enqueue_asset_processing_job, enqueue_job
+from app.services.jobs.queue import enqueue_asset_processing_job
+from app.services.jobs.queue import enqueue_scan_job
 from app.services.assets.media import (
     MEDIA_ORIGINALS_DIR,
     MEDIA_ORIGINALS_TMP_DIR,
@@ -30,7 +31,6 @@ from app.services.notifications.types import NotificationCategory, NotificationL
 
 logger = logging.getLogger(__name__)
 SCAN_BATCH_SIZE = 50
-SCAN_JOB_NAME = "scan_originals_library"
 
 
 @dataclass(frozen=True)
@@ -66,10 +66,6 @@ def _stats_to_result(stats: ScanStats) -> dict[str, int]:
         "failed": stats.failed,
         "processing_jobs_enqueued": stats.processing_jobs_enqueued,
     }
-
-
-async def enqueue_scan_job(job_id: UUID) -> bool:
-    return await enqueue_job(SCAN_JOB_NAME, str(job_id))
 
 
 def iter_scannable_files(root: Path = MEDIA_ORIGINALS_DIR):

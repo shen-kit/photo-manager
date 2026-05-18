@@ -18,7 +18,6 @@ from sqlmodel import Session, select
 from app.core.database import engine, get_session
 from app.models import Asset, AssetTag, Face, Person, Tag
 from app.services.assets.hashing import compute_sha256
-from app.services.assets.jobs import enqueue_asset_processing_job
 from app.services.assets.media import (
     MEDIA_ORIGINALS_DIR,
     MEDIA_ORIGINALS_TMP_DIR,
@@ -42,7 +41,8 @@ from app.services.assets.media import (
     source_path_to_master_path,
     validate_supported_media,
 )
-from app.services.assets.scan import enqueue_scan_job
+from app.services.jobs.queue import enqueue_asset_processing_job
+from app.services.jobs.queue import enqueue_scan_job
 from app.services.jobs.service import JobService
 from app.services.notifications.service import NotificationService
 from app.services.notifications.types import NotificationCategory, NotificationLevel

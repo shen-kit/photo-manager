@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from app.services.embeddings.tasks import (
+    generate_asset_clip_embedding as generate_asset_clip_embedding_job,
+    generate_missing_asset_clip_embeddings as generate_missing_asset_clip_embeddings_job,
+)
 from app.services.assets.jobs import (
     process_asset_metadata as process_asset_metadata_job,
 )
@@ -16,3 +20,20 @@ async def process_asset_metadata(
 
 async def scan_originals_library(ctx: dict[str, object], job_id: str) -> dict[str, int]:
     return await scan_originals_library_job(ctx, job_id)
+
+
+async def generate_asset_clip_embedding(
+    ctx: dict[str, object],
+    asset_id: str,
+    force: bool = False,
+    job_id: str | None = None,
+) -> None:
+    await generate_asset_clip_embedding_job(ctx, asset_id, force, job_id)
+
+
+async def generate_missing_asset_clip_embeddings(
+    ctx: dict[str, object],
+    job_id: str,
+    force: bool = False,
+) -> dict[str, int]:
+    return await generate_missing_asset_clip_embeddings_job(ctx, job_id, force)
