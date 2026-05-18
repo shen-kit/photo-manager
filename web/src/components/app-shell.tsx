@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation } from "@tanstack/react-query";
-import { Home, LoaderCircle, LogOut, Workflow } from "lucide-react";
+import { Home, LoaderCircle, LogOut, Search, Workflow } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import type { ReactNode } from "react";
@@ -76,6 +76,10 @@ export function AppShell({
               <Link href="/" className={navLinkClass("/")}>
                 <Home className="h-4 w-4" />
                 Dashboard
+              </Link>
+              <Link href="/search" className={navLinkClass("/search")}>
+                <Search className="h-4 w-4" />
+                Search
               </Link>
               <Link href="/jobs" className={navLinkClass("/jobs")}>
                 <Workflow className="h-4 w-4" />

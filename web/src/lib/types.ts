@@ -130,3 +130,27 @@ export type AssetUpdatePayload = {
   description?: string | null;
   is_favorite?: boolean;
 };
+
+export type SearchResultItem = {
+  id: string;
+  captured_at: string | null;
+  description: string | null;
+  is_favorite: boolean;
+  width: number | null;
+  height: number | null;
+  has_large_preview: boolean;
+  small_thumbnail_url: string;
+  blurhash: string | null;
+  score: number;
+  distance: number;
+  tags: AssetTag[];
+  faces: FaceSummary[];
+};
+
+export type SearchResponse = {
+  items: SearchResultItem[];
+  query: string;
+  limit: number;
+  offset: number;
+  total: number;
+};
