@@ -5,7 +5,6 @@ import os
 from arq import run_worker
 from arq.connections import RedisSettings
 
-from app.core.database import create_db_and_tables
 from app.core.logging import setup_logging
 from .tasks import process_asset_metadata, scan_originals_library
 
@@ -20,5 +19,4 @@ class WorkerSettings:
 
 def main() -> None:
     setup_logging()
-    create_db_and_tables()
     run_worker(WorkerSettings)
