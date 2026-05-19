@@ -27,9 +27,11 @@ class _FakePeopleClusteringRepository:
         *,
         candidates: list[FaceClusterCandidate],
         neighbors: dict[tuple[str, int], list[str]],
+        labeled_neighbors: dict[tuple[str, int], list[tuple[str, float]]] | None = None,
     ) -> None:
         self.candidates_by_id = {candidate.id: candidate for candidate in candidates}
         self.neighbors = neighbors
+        self.labeled_neighbors = labeled_neighbors or {}
         self.created_people: list[object] = []
         self.assignments: dict[str, list[str]] = {}
         self.last_model_ids: list[int] = []
@@ -49,6 +51,21 @@ class _FakePeopleClusteringRepository:
         self.last_model_ids.append(model_id)
         values = self.neighbors.get((str(face_id), model_id), [])
         return [self._uuid(value) for value in values[:top_k]]
+
+    def list_labeled_neighbor_people(
+        self,
+        *,
+        face_id,
+        model_id: int,
+        distance_threshold: float,
+        top_k: int,
+    ) -> list[tuple]:
+        self.last_model_ids.append(model_id)
+        values = self.labeled_neighbors.get((str(face_id), model_id), [])
+        return [
+            (self._uuid(person_id), distance)
+            for person_id, distance in values[:top_k]
+        ]
 
     def create_person(self):
         person_id = uuid4()
@@ -201,6 +218,75 @@ class PeopleClusteringServiceTest(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "min_cluster_size"):
             service.cluster_unassigned_faces(min_cluster_size=1)
+
+    def test_assigns_new_faces_to_existing_named_person(self) -> None:
+        a = self._candidate(confidence=0.6, crop_path=None)
+        b = self._candidate(confidence=0.7, crop_path=None)
+        model = self._model()
+        existing_person_id = uuid4()
+        repo = _FakePeopleClusteringRepository(
+            candidates=[a, b],
+            neighbors={
+                (str(a.id), model.id): [str(b.id)],
+                (str(b.id), model.id): [str(a.id)],
+            },
+            labeled_neighbors={
+                (str(a.id), model.id): [(str(existing_person_id), 0.22)],
+                (str(b.id), model.id): [(str(existing_person_id), 0.25)],
+            },
+        )
+        thumbnail_service = _FakeThumbnailService()
+        service = PeopleClusteringService(
+            session=None,
+            repository=repo,
+            ai_model_repository=_FakeAIModelRepository(model),
+            thumbnail_service=thumbnail_service,
+        )
+
+        summary = service.cluster_unassigned_faces()
+
+        self.assertEqual(summary.clusters_created, 0)
+        self.assertEqual(summary.faces_assigned, 2)
+        self.assertEqual(len(repo.created_people), 0)
+        self.assertEqual(
+            repo.assignments[str(existing_person_id)],
+            sorted([str(a.id), str(b.id)]),
+        )
+        self.assertEqual(thumbnail_service.ensure_calls, [str(existing_person_id)])
+
+    def test_ambiguous_named_matches_do_not_assign_or_create_cluster(self) -> None:
+        a = self._candidate(confidence=0.6, crop_path=None)
+        b = self._candidate(confidence=0.7, crop_path=None)
+        model = self._model()
+        person_a = uuid4()
+        person_b = uuid4()
+        repo = _FakePeopleClusteringRepository(
+            candidates=[a, b],
+            neighbors={
+                (str(a.id), model.id): [str(b.id)],
+                (str(b.id), model.id): [str(a.id)],
+            },
+            labeled_neighbors={
+                (str(a.id), model.id): [(str(person_a), 0.22)],
+                (str(b.id), model.id): [(str(person_b), 0.23)],
+            },
+        )
+        thumbnail_service = _FakeThumbnailService()
+        service = PeopleClusteringService(
+            session=None,
+            repository=repo,
+            ai_model_repository=_FakeAIModelRepository(model),
+            thumbnail_service=thumbnail_service,
+        )
+
+        summary = service.cluster_unassigned_faces()
+
+        self.assertEqual(summary.clusters_created, 0)
+        self.assertEqual(summary.faces_assigned, 0)
+        self.assertEqual(summary.skipped_small_clusters, 0)
+        self.assertEqual(len(repo.created_people), 0)
+        self.assertEqual(repo.assignments, {})
+        self.assertEqual(thumbnail_service.ensure_calls, [])
 
 
 if __name__ == "__main__":

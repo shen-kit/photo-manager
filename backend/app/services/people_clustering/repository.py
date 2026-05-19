@@ -79,6 +79,44 @@ class PeopleClusteringRepository:
         )
         return [row[0] for row in result.all()]
 
+    def list_labeled_neighbor_people(
+        self,
+        *,
+        face_id: UUID,
+        model_id: int,
+        distance_threshold: float,
+        top_k: int,
+    ) -> list[tuple[UUID, float]]:
+        statement = sa.text(
+            """
+            SELECT other.person_id, CAST(other.embedding <=> seed.embedding AS double precision) AS distance
+            FROM faces AS seed
+            JOIN faces AS other
+              ON other.id <> seed.id
+            JOIN people AS person
+              ON person.id = other.person_id
+            WHERE seed.id = :face_id
+              AND other.embedding IS NOT NULL
+              AND other.is_excluded = false
+              AND other.person_id IS NOT NULL
+              AND other.face_model_id = :model_id
+              AND person.name IS NOT NULL
+              AND btrim(person.name) <> ''
+              AND (other.embedding <=> seed.embedding) <= :distance_threshold
+            ORDER BY other.embedding <=> seed.embedding ASC, other.id ASC
+            LIMIT :top_k
+            """
+        )
+        result = self.session.exec(
+            statement.bindparams(
+                face_id=face_id,
+                model_id=model_id,
+                distance_threshold=distance_threshold,
+                top_k=top_k,
+            )
+        )
+        return [(row[0], float(row[1])) for row in result.all()]
+
     def create_person(self) -> Person:
         person = Person(name=None, thumbnail_face_id=None, is_hidden=False)
         self.session.add(person)

@@ -34,6 +34,12 @@ class PeopleClusteringSummary:
     skipped_small_clusters: int
 
 
+@dataclass(frozen=True)
+class ExistingPersonResolution:
+    person_id: UUID | None
+    ambiguous: bool = False
+
+
 class PeopleClusteringService:
     def __init__(
         self,
@@ -87,6 +93,24 @@ class PeopleClusteringService:
         skipped_small_clusters = 0
 
         for component in components:
+            existing_person = self._resolve_existing_person_id(
+                component=component,
+                model_id=default_model.id,
+                distance_threshold=distance_threshold,
+                top_k=top_k,
+            )
+            if existing_person.person_id is not None:
+                ordered_face_ids = sorted(component, key=str)
+                faces_assigned += self.repository.assign_faces_to_person(
+                    face_ids=ordered_face_ids,
+                    person_id=existing_person.person_id,
+                )
+                self.thumbnail_service.ensure_thumbnail(
+                    person_id=existing_person.person_id
+                )
+                continue
+            if existing_person.ambiguous:
+                continue
             if len(component) < min_cluster_size:
                 skipped_small_clusters += 1
                 continue
@@ -152,3 +176,31 @@ class PeopleClusteringService:
             components.append(component)
 
         return components
+
+    def _resolve_existing_person_id(
+        self,
+        *,
+        component: set[UUID],
+        model_id: int,
+        distance_threshold: float,
+        top_k: int,
+    ) -> ExistingPersonResolution:
+        person_scores: dict[UUID, tuple[int, float]] = {}
+        for face_id in component:
+            for person_id, distance in self.repository.list_labeled_neighbor_people(
+                face_id=face_id,
+                model_id=model_id,
+                distance_threshold=distance_threshold,
+                top_k=top_k,
+            ):
+                count, best_distance = person_scores.get(person_id, (0, float("inf")))
+                person_scores[person_id] = (count + 1, min(best_distance, distance))
+
+        if not person_scores:
+            return ExistingPersonResolution(person_id=None, ambiguous=False)
+        if len(person_scores) != 1:
+            return ExistingPersonResolution(person_id=None, ambiguous=True)
+        return ExistingPersonResolution(
+            person_id=next(iter(person_scores)),
+            ambiguous=False,
+        )
