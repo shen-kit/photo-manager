@@ -7,10 +7,13 @@ alembic==1.18.1
 arq==0.28.0
 blurhash==1.1.5
 numpy==2.2.5
+opencv-python-headless==4.11.0.86
 open_clip_torch==3.3.0
 pgvector==0.4.2
 Pillow==11.2.1
 pillow-heif==0.16.0
+insightface==0.7.3
+onnxruntime==1.22.0
 torch==2.7.1
 torchvision==0.22.1
 python-multipart==0.0.20
