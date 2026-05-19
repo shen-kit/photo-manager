@@ -46,6 +46,8 @@ from app.services.jobs.queue import enqueue_scan_job
 from app.services.jobs.service import JobService
 from app.services.notifications.service import NotificationService
 from app.services.notifications.types import NotificationCategory, NotificationLevel
+from app.services.people.maintenance import PeopleMaintenanceService
+from app.services.people.repository import PeopleRepository
 
 logger = logging.getLogger(__name__)
 
@@ -329,9 +331,15 @@ class AssetService:
 
     def delete_asset(self, asset_id: UUID) -> None:
         asset = self._get_active_asset_or_404(asset_id)
+        people_repository = PeopleRepository(self.session)
+        impacted_person_ids = people_repository.list_person_ids_for_asset(asset_id=asset.id)
         asset.deleted_at = datetime.now(timezone.utc)
         self.session.add(asset)
         self.session.commit()
+        PeopleMaintenanceService(
+            self.session,
+            repository=people_repository,
+        ).reconcile_people(person_ids=impacted_person_ids)
 
     async def process_new_asset(
         self,

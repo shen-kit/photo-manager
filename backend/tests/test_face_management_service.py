@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 from datetime import datetime, timezone
+from unittest.mock import Mock
 from uuid import uuid4
 
 from app.models import Face, Person
@@ -62,10 +63,12 @@ class FaceManagementServiceTest(unittest.TestCase):
         person = self._person()
         repository = _FakeFaceRepository(face, person)
         thumbnail_service = _FakeThumbnailService()
+        maintenance_service = Mock()
         service = FaceManagementService(
             session=None,
             repository=repository,
             thumbnail_service=thumbnail_service,
+            people_maintenance_service=maintenance_service,
         )
 
         updated = service.update_face(face.id, person_id=person.id)
@@ -73,7 +76,9 @@ class FaceManagementServiceTest(unittest.TestCase):
         self.assertEqual(updated.person_id, person.id)
         self.assertTrue(updated.is_confirmed)
         self.assertFalse(updated.is_excluded)
-        self.assertEqual(thumbnail_service.ensure_calls, [str(person.id)])
+        maintenance_service.reconcile_people.assert_called_once_with(
+            person_ids=[person.id]
+        )
 
     def test_assigning_face_to_missing_person_fails(self) -> None:
         face = self._face()
@@ -82,6 +87,7 @@ class FaceManagementServiceTest(unittest.TestCase):
             session=None,
             repository=repository,
             thumbnail_service=_FakeThumbnailService(),
+            people_maintenance_service=Mock(),
         )
 
         with self.assertRaises(FaceManagementServiceError) as exc:
@@ -98,6 +104,7 @@ class FaceManagementServiceTest(unittest.TestCase):
             session=None,
             repository=repository,
             thumbnail_service=_FakeThumbnailService(),
+            people_maintenance_service=Mock(),
         )
 
         with self.assertRaises(FaceManagementServiceError) as exc:
@@ -111,10 +118,12 @@ class FaceManagementServiceTest(unittest.TestCase):
         person = self._person()
         repository = _FakeFaceRepository(face, person)
         thumbnail_service = _FakeThumbnailService()
+        maintenance_service = Mock()
         service = FaceManagementService(
             session=None,
             repository=repository,
             thumbnail_service=thumbnail_service,
+            people_maintenance_service=maintenance_service,
         )
 
         updated = service.update_face(
@@ -126,7 +135,9 @@ class FaceManagementServiceTest(unittest.TestCase):
         self.assertEqual(updated.person_id, person.id)
         self.assertFalse(updated.is_excluded)
         self.assertTrue(updated.is_confirmed)
-        self.assertEqual(thumbnail_service.ensure_calls, [str(person.id)])
+        maintenance_service.reconcile_people.assert_called_once_with(
+            person_ids=[person.id]
+        )
 
 
 if __name__ == "__main__":

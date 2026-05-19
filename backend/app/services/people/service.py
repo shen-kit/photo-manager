@@ -100,7 +100,7 @@ class PeopleService:
                     detail="thumbnail_face_id must belong to the person",
                 )
         if name is not ...:
-            person.name = name
+            person.name = self._normalize_person_name(name)
         if is_hidden is not ...:
             person.is_hidden = is_hidden
         if thumbnail_face_id is not ...:
@@ -194,6 +194,13 @@ class PeopleService:
             source_deleted=source_deleted,
             target_person_id=target_person_id,
         )
+
+    @staticmethod
+    def _normalize_person_name(name: str | None | object) -> str | None | object:
+        if name is ... or name is None:
+            return name
+        normalized = name.strip()
+        return normalized or None
 
 
 def get_people_service(session: Session = Depends(get_session)) -> PeopleService:

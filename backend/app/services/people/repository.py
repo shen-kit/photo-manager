@@ -40,6 +40,7 @@ class PeopleRepository:
         search: str | None,
     ) -> list[PersonReadRow]:
         stats_subquery = self._person_stats_subquery()
+        named_sort = self._named_person_sort_expression()
         statement = (
             select(
                 Person,
@@ -50,11 +51,13 @@ class PeopleRepository:
             .outerjoin(stats_subquery, stats_subquery.c.person_id == Person.id)
             .outerjoin(Face, Face.id == Person.thumbnail_face_id)
         )
+        statement = statement.where(func.coalesce(stats_subquery.c.asset_count, 0) > 0)
         if not include_hidden:
             statement = statement.where(Person.is_hidden.is_(False))
         if search:
             statement = statement.where(Person.name.ilike(f"%{search}%"))
         statement = statement.order_by(
+            named_sort.asc(),
             func.coalesce(stats_subquery.c.asset_count, 0).desc(),
             func.coalesce(stats_subquery.c.face_count, 0).desc(),
             Person.name.asc().nullslast(),
@@ -86,7 +89,10 @@ class PeopleRepository:
             )
             .outerjoin(stats_subquery, stats_subquery.c.person_id == Person.id)
             .outerjoin(Face, Face.id == Person.thumbnail_face_id)
-            .where(Person.id == person_id)
+            .where(
+                Person.id == person_id,
+                func.coalesce(stats_subquery.c.asset_count, 0) > 0,
+            )
         )
         row = self.session.exec(statement).first()
         if row is None:
@@ -252,8 +258,57 @@ class PeopleRepository:
     def list_existing_person_ids(self, person_ids: list[UUID]) -> list[UUID]:
         if not person_ids:
             return []
-        statement = select(Person.id).where(Person.id.in_(person_ids))
+        stats_subquery = self._person_stats_subquery()
+        statement = (
+            select(Person.id)
+            .outerjoin(stats_subquery, stats_subquery.c.person_id == Person.id)
+            .where(
+                Person.id.in_(person_ids),
+                func.coalesce(stats_subquery.c.asset_count, 0) > 0,
+            )
+        )
         return list(self.session.exec(statement).all())
+
+    def list_people_by_ids(self, person_ids: list[UUID]) -> list[Person]:
+        if not person_ids:
+            return []
+        statement = select(Person).where(Person.id.in_(person_ids))
+        return list(self.session.exec(statement).all())
+
+    def list_person_ids_for_asset(self, *, asset_id: UUID) -> list[UUID]:
+        statement = (
+            select(func.distinct(Face.person_id))
+            .where(Face.asset_id == asset_id, Face.person_id.is_not(None))
+        )
+        return [person_id for person_id in self.session.exec(statement).all() if person_id]
+
+    def list_person_ids_without_active_assets(self, *, person_ids: list[UUID]) -> list[UUID]:
+        if not person_ids:
+            return []
+        stats_subquery = self._person_stats_subquery()
+        statement = (
+            select(Person.id)
+            .outerjoin(stats_subquery, stats_subquery.c.person_id == Person.id)
+            .where(
+                Person.id.in_(person_ids),
+                func.coalesce(stats_subquery.c.asset_count, 0) == 0,
+            )
+        )
+        return list(self.session.exec(statement).all())
+
+    def delete_people(self, people: list[Person]) -> list[UUID]:
+        if not people:
+            return []
+        deleted_ids: list[UUID] = []
+        for person in people:
+            person.thumbnail_face_id = None
+            person.thumbnail_path = None
+            person.thumbnail_manually_set = False
+            self.session.add(person)
+            deleted_ids.append(person.id)
+            self.session.delete(person)
+        self.session.commit()
+        return deleted_ids
 
     def count_assets_for_people(self, *, person_ids: list[UUID]) -> int:
         matching_assets = self._matching_assets_by_people_subquery(person_ids)
@@ -297,13 +352,20 @@ class PeopleRepository:
                 func.count(Face.id).label("face_count"),
                 func.count(func.distinct(Face.asset_id)).label("asset_count"),
             )
+            .join(Asset, Asset.id == Face.asset_id)
             .where(
                 Face.person_id.is_not(None),
                 Face.is_excluded.is_(False),
+                Asset.deleted_at.is_(None),
             )
             .group_by(Face.person_id)
             .subquery()
         )
+
+    @staticmethod
+    def _named_person_sort_expression():
+        trimmed_name = func.nullif(func.btrim(Person.name), "")
+        return case((trimmed_name.is_(None), 1), else_=0)
 
     def _matching_assets_by_people_subquery(self, person_ids: list[UUID]):
         return (

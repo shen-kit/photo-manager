@@ -126,6 +126,21 @@ class PeopleServiceTest(unittest.TestCase):
 
         self.assertEqual(exc.exception.status_code, 400)
 
+    def test_update_person_normalizes_blank_name_to_none(self) -> None:
+        person = self._person()
+        repo = _FakePeopleRepository(person)
+        repo.person_rows[str(person.id)] = self._row(person)
+        service = PeopleService(
+            session=None,
+            repository=repo,
+            thumbnail_service=_FakeThumbnailService(),
+        )
+
+        updated = service.update_person(person.id, name="   ")
+
+        self.assertIsNone(repo.updated_person.name)
+        self.assertIsNone(updated.person.name)
+
     def test_validate_person_ids_rejects_missing_people(self) -> None:
         person_a = uuid4()
         person_b = uuid4()
