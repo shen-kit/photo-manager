@@ -331,6 +331,10 @@ def _load_preview_image(original_path: Path, mime_type: str) -> PILImage:
     if is_supported_video_mime_type(mime_type):
         return _extract_middle_video_frame(original_path)
 
+    return load_oriented_rgb_image(original_path)
+
+
+def load_oriented_rgb_image(original_path: Path) -> PILImage:
     with Image.open(original_path) as image:
         return ImageOps.exif_transpose(image).convert("RGB").copy()
 

@@ -26,8 +26,9 @@ class PersonRead(SQLModel):
     id: UUID
     name: str | None = None
     thumbnail_face_id: UUID | None = None
-    thumbnail_crop_path: str | None = None
-    thumbnail_crop_url: str | None = None
+    thumbnail_path: str | None = None
+    thumbnail_url: str | None = None
+    thumbnail_manually_set: bool
     face_count: int
     asset_count: int
     is_hidden: bool
@@ -37,6 +38,10 @@ class PersonUpdateRequest(SQLModel):
     name: str | None = None
     is_hidden: bool | None = None
     thumbnail_face_id: UUID | None = None
+
+
+class PersonThumbnailUpdateRequest(SQLModel):
+    asset_id: UUID
 
 
 class PersonAssetItem(SQLModel):

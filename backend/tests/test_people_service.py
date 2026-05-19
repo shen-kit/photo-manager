@@ -9,6 +9,7 @@ from fastapi import HTTPException
 from app.models import Person
 from app.services.people.repository import PersonReadRow
 from app.services.people.service import PeopleService
+from app.services.people.thumbnails import PersonThumbnailServiceError
 
 
 class _FakePeopleRepository:
@@ -54,6 +55,29 @@ class _FakePeopleRepository:
         return self.merge_result
 
 
+class _FakeThumbnailService:
+    def __init__(self) -> None:
+        self.manual_calls: list[tuple[str, str]] = []
+        self.ensure_calls: list[str] = []
+        self.deleted_paths: list[str | None] = []
+
+    def set_manual_thumbnail(self, *, person_id, asset_id):
+        self.manual_calls.append((str(person_id), str(asset_id)))
+
+    def ensure_thumbnail(self, *, person_id):
+        self.ensure_calls.append(str(person_id))
+
+    def delete_thumbnail_file(self, thumbnail_path):
+        self.deleted_paths.append(thumbnail_path)
+
+
+class _RejectingThumbnailService(_FakeThumbnailService):
+    def set_manual_thumbnail(self, *, person_id, asset_id):
+        raise PersonThumbnailServiceError(
+            "asset_id must contain a non-excluded face for the person"
+        )
+
+
 class PeopleServiceTest(unittest.TestCase):
     def _person(self) -> Person:
         return Person(id=uuid4(), name=None, thumbnail_face_id=None, is_hidden=False)
@@ -63,14 +87,18 @@ class PeopleServiceTest(unittest.TestCase):
             person=person,
             face_count=3,
             asset_count=2,
-            thumbnail_crop_path=None,
+            thumbnail_path=None,
         )
 
     def test_update_person_renames_and_hides(self) -> None:
         person = self._person()
         repo = _FakePeopleRepository(person)
         repo.person_rows[str(person.id)] = self._row(person)
-        service = PeopleService(session=None, repository=repo)
+        service = PeopleService(
+            session=None,
+            repository=repo,
+            thumbnail_service=_FakeThumbnailService(),
+        )
 
         updated = service.update_person(
             person.id,
@@ -87,7 +115,11 @@ class PeopleServiceTest(unittest.TestCase):
         person = self._person()
         repo = _FakePeopleRepository(person)
         repo.face_belongs = False
-        service = PeopleService(session=None, repository=repo)
+        service = PeopleService(
+            session=None,
+            repository=repo,
+            thumbnail_service=_FakeThumbnailService(),
+        )
 
         with self.assertRaises(HTTPException) as exc:
             service.update_person(person.id, thumbnail_face_id=uuid4())
@@ -99,7 +131,11 @@ class PeopleServiceTest(unittest.TestCase):
         person_b = uuid4()
         repo = _FakePeopleRepository(None)
         repo.existing_person_ids = [person_a]
-        service = PeopleService(session=None, repository=repo)
+        service = PeopleService(
+            session=None,
+            repository=repo,
+            thumbnail_service=_FakeThumbnailService(),
+        )
 
         with self.assertRaises(HTTPException) as exc:
             service.validate_person_ids([person_a, person_b])
@@ -116,7 +152,14 @@ class PeopleServiceTest(unittest.TestCase):
         people_by_id = {source.id: source, target.id: target}
         repo.get_person = lambda person_id: people_by_id.get(person_id)
         repo.merge_result = (4, True)
-        service = PeopleService(session=None, repository=repo)
+        source.thumbnail_path = "generated/people/thumbnails/source.webp"
+        source_thumbnail_path = source.thumbnail_path
+        thumbnail_service = _FakeThumbnailService()
+        service = PeopleService(
+            session=None,
+            repository=repo,
+            thumbnail_service=thumbnail_service,
+        )
 
         summary = service.merge_people(
             source_person_id=source.id,
@@ -129,11 +172,17 @@ class PeopleServiceTest(unittest.TestCase):
         self.assertEqual(repo.merge_calls, [(str(source.id), str(target.id))])
         self.assertEqual(target.name, "Target")
         self.assertTrue(target.is_hidden)
+        self.assertEqual(thumbnail_service.deleted_paths, [source_thumbnail_path])
+        self.assertEqual(thumbnail_service.ensure_calls, [str(target.id)])
 
     def test_merge_people_requires_distinct_people(self) -> None:
         person = self._person()
         repo = _FakePeopleRepository(person)
-        service = PeopleService(session=None, repository=repo)
+        service = PeopleService(
+            session=None,
+            repository=repo,
+            thumbnail_service=_FakeThumbnailService(),
+        )
 
         with self.assertRaises(HTTPException) as exc:
             service.merge_people(

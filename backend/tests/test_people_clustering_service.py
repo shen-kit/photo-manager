@@ -32,7 +32,6 @@ class _FakePeopleClusteringRepository:
         self.neighbors = neighbors
         self.created_people: list[object] = []
         self.assignments: dict[str, list[str]] = {}
-        self.thumbnails: dict[str, str | None] = {}
         self.last_model_ids: list[int] = []
 
     def list_cluster_candidates(self, *, model_id: int) -> list[FaceClusterCandidate]:
@@ -64,16 +63,19 @@ class _FakePeopleClusteringRepository:
             self.candidates_by_id.pop(face_id, None)
         return len(face_ids)
 
-    def set_person_thumbnail_face(self, *, person_id, thumbnail_face_id):
-        self.thumbnails[str(person_id)] = (
-            str(thumbnail_face_id) if thumbnail_face_id is not None else None
-        )
-
     @staticmethod
     def _uuid(value: str):
         from uuid import UUID
 
         return UUID(value)
+
+
+class _FakeThumbnailService:
+    def __init__(self) -> None:
+        self.ensure_calls: list[str] = []
+
+    def ensure_thumbnail(self, *, person_id):
+        self.ensure_calls.append(str(person_id))
 
 
 class PeopleClusteringServiceTest(unittest.TestCase):
@@ -112,10 +114,12 @@ class PeopleClusteringServiceTest(unittest.TestCase):
                 (str(e.id), model.id): [str(d.id)],
             },
         )
+        thumbnail_service = _FakeThumbnailService()
         service = PeopleClusteringService(
             session=None,
             repository=repo,
             ai_model_repository=_FakeAIModelRepository(model),
+            thumbnail_service=thumbnail_service,
         )
 
         summary = service.cluster_unassigned_faces(min_cluster_size=3)
@@ -127,8 +131,10 @@ class PeopleClusteringServiceTest(unittest.TestCase):
         self.assertEqual(len(repo.created_people), 1)
         assigned_face_ids = next(iter(repo.assignments.values()))
         self.assertEqual(set(assigned_face_ids), {str(a.id), str(b.id), str(c.id)})
-        thumbnail_face_id = next(iter(repo.thumbnails.values()))
-        self.assertEqual(thumbnail_face_id, str(b.id))
+        self.assertEqual(
+            thumbnail_service.ensure_calls,
+            [str(repo.created_people[0].id)],
+        )
 
     def test_rerun_skips_already_assigned_faces(self) -> None:
         a = self._candidate(confidence=0.6, crop_path=None)
@@ -141,10 +147,12 @@ class PeopleClusteringServiceTest(unittest.TestCase):
                 (str(b.id), model.id): [str(a.id)],
             },
         )
+        thumbnail_service = _FakeThumbnailService()
         service = PeopleClusteringService(
             session=None,
             repository=repo,
             ai_model_repository=_FakeAIModelRepository(model),
+            thumbnail_service=thumbnail_service,
         )
 
         first = service.cluster_unassigned_faces()
@@ -155,6 +163,7 @@ class PeopleClusteringServiceTest(unittest.TestCase):
         self.assertEqual(second.candidates_seen, 0)
         self.assertEqual(second.clusters_created, 0)
         self.assertEqual(second.faces_assigned, 0)
+        self.assertEqual(len(thumbnail_service.ensure_calls), 1)
 
     def test_uses_default_model_id_for_candidate_and_neighbor_queries(self) -> None:
         a = self._candidate(confidence=0.6, crop_path=None)
@@ -167,29 +176,18 @@ class PeopleClusteringServiceTest(unittest.TestCase):
                 (str(b.id), model.id): [str(a.id)],
             },
         )
+        thumbnail_service = _FakeThumbnailService()
         service = PeopleClusteringService(
             session=None,
             repository=repo,
             ai_model_repository=_FakeAIModelRepository(model),
+            thumbnail_service=thumbnail_service,
         )
 
         service.cluster_unassigned_faces()
 
         self.assertTrue(repo.last_model_ids)
         self.assertTrue(all(model_id == 42 for model_id in repo.last_model_ids))
-
-    def test_thumbnail_prefers_crop_then_confidence(self) -> None:
-        low_crop = self._candidate(confidence=0.2, crop_path="faces/a.webp")
-        high_no_crop = self._candidate(confidence=0.9, crop_path=None)
-        summary = PeopleClusteringService._select_thumbnail_face_id(
-            [low_crop.id, high_no_crop.id],
-            {
-                low_crop.id: low_crop,
-                high_no_crop.id: high_no_crop,
-            },
-        )
-
-        self.assertEqual(summary, low_crop.id)
 
     def test_rejects_invalid_min_cluster_size(self) -> None:
         model = self._model()
@@ -198,6 +196,7 @@ class PeopleClusteringServiceTest(unittest.TestCase):
             session=None,
             repository=repo,
             ai_model_repository=_FakeAIModelRepository(model),
+            thumbnail_service=_FakeThumbnailService(),
         )
 
         with self.assertRaisesRegex(RuntimeError, "min_cluster_size"):

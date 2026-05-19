@@ -18,6 +18,7 @@ from app.services.people.schemas import (
     PersonMergeResponse,
     PersonRead,
     PersonSummary,
+    PersonThumbnailUpdateRequest,
     PersonUpdateRequest,
     TagSummary,
 )
@@ -38,10 +39,10 @@ class PeopleClusteringRequest(SQLModel):
     min_cluster_size: int = CLUSTER_MIN_SIZE
 
 
-def _person_thumbnail_url(request: Request, crop_path: str | None) -> str | None:
-    if not crop_path:
+def _person_thumbnail_url(request: Request, thumbnail_path: str | None) -> str | None:
+    if not thumbnail_path:
         return None
-    normalized = Path(crop_path).as_posix().lstrip("/")
+    normalized = Path(thumbnail_path).as_posix().lstrip("/")
     return str(request.base_url).rstrip("/") + f"/media/processed/{normalized}"
 
 
@@ -77,8 +78,9 @@ def _build_person_read(request: Request, row) -> PersonRead:
         id=row.person.id,
         name=row.person.name,
         thumbnail_face_id=row.person.thumbnail_face_id,
-        thumbnail_crop_path=row.thumbnail_crop_path,
-        thumbnail_crop_url=_person_thumbnail_url(request, row.thumbnail_crop_path),
+        thumbnail_path=row.person.thumbnail_path,
+        thumbnail_url=_person_thumbnail_url(request, row.person.thumbnail_path),
+        thumbnail_manually_set=row.person.thumbnail_manually_set,
         face_count=row.face_count,
         asset_count=row.asset_count,
         is_hidden=row.person.is_hidden,
@@ -190,6 +192,22 @@ def update_person(
     del current_user
     updates = payload.model_dump(exclude_unset=True)
     updated = people_service.update_person(person_id, **updates)
+    return _build_person_read(request, updated)
+
+
+@router.patch("/people/{person_id}/thumbnail", response_model=PersonRead)
+def update_person_thumbnail(
+    person_id: UUID,
+    payload: PersonThumbnailUpdateRequest,
+    request: Request,
+    people_service: PeopleService = Depends(get_people_service),
+    current_user: User = Depends(get_current_user),
+) -> PersonRead:
+    del current_user
+    updated = people_service.set_thumbnail(
+        person_id=person_id,
+        asset_id=payload.asset_id,
+    )
     return _build_person_read(request, updated)
 
 

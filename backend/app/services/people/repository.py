@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
+import sqlalchemy as sa
 from sqlalchemy import case, func
 from sqlmodel import Session, select
 
@@ -15,7 +16,17 @@ class PersonReadRow:
     person: Person
     face_count: int
     asset_count: int
-    thumbnail_crop_path: str | None
+    thumbnail_path: str | None
+
+
+@dataclass(frozen=True)
+class PersonThumbnailCandidate:
+    face_id: UUID
+    asset_id: UUID
+    master_path: str
+    mime_type: str
+    bounding_box: dict[str, Any]
+    confidence: float | None
 
 
 class PeopleRepository:
@@ -54,7 +65,7 @@ class PeopleRepository:
                 person=person,
                 face_count=int(face_count),
                 asset_count=int(asset_count),
-                thumbnail_crop_path=crop_path,
+                thumbnail_path=person.thumbnail_path,
             )
             for person, face_count, asset_count, crop_path in self.session.exec(
                 statement
@@ -85,7 +96,7 @@ class PeopleRepository:
             person=person,
             face_count=int(face_count),
             asset_count=int(asset_count),
-            thumbnail_crop_path=crop_path,
+            thumbnail_path=person.thumbnail_path,
         )
 
     def face_belongs_to_person(self, *, face_id: UUID, person_id: UUID) -> bool:
@@ -98,25 +109,110 @@ class PeopleRepository:
         self.session.refresh(person)
         return person
 
+    def get_thumbnail_candidate(
+        self,
+        *,
+        person_id: UUID,
+        face_id: UUID,
+    ) -> PersonThumbnailCandidate | None:
+        statement = (
+            select(
+                Face.id,
+                Face.asset_id,
+                Asset.master_path,
+                Asset.mime_type,
+                Face.bounding_box,
+                Face.confidence,
+            )
+            .join(Asset, Asset.id == Face.asset_id)
+            .where(
+                Face.id == face_id,
+                Face.person_id == person_id,
+                Face.is_excluded.is_(False),
+                Face.asset_id.is_not(None),
+                Asset.deleted_at.is_(None),
+            )
+        )
+        row = self.session.exec(statement).first()
+        return self._thumbnail_candidate_from_row(row)
+
+    def get_thumbnail_candidate_for_asset(
+        self,
+        *,
+        person_id: UUID,
+        asset_id: UUID,
+    ) -> PersonThumbnailCandidate | None:
+        statement = (
+            select(
+                Face.id,
+                Face.asset_id,
+                Asset.master_path,
+                Asset.mime_type,
+                Face.bounding_box,
+                Face.confidence,
+            )
+            .join(Asset, Asset.id == Face.asset_id)
+            .where(
+                Face.person_id == person_id,
+                Face.asset_id == asset_id,
+                Face.is_excluded.is_(False),
+                Asset.deleted_at.is_(None),
+            )
+            .order_by(
+                (
+                    func.coalesce(Face.confidence, 0.0)
+                    * func.greatest(
+                        func.coalesce(Face.bounding_box["width"].astext.cast(sa.Integer), 0),
+                        0,
+                    )
+                    * func.greatest(
+                        func.coalesce(Face.bounding_box["height"].astext.cast(sa.Integer), 0),
+                        0,
+                    )
+                ).desc(),
+                func.coalesce(Face.confidence, 0.0).desc(),
+                Face.id.asc(),
+            )
+        )
+        row = self.session.exec(statement).first()
+        return self._thumbnail_candidate_from_row(row)
+
+    def list_thumbnail_candidates_for_person(
+        self,
+        *,
+        person_id: UUID,
+    ) -> list[PersonThumbnailCandidate]:
+        statement = (
+            select(
+                Face.id,
+                Face.asset_id,
+                Asset.master_path,
+                Asset.mime_type,
+                Face.bounding_box,
+                Face.confidence,
+            )
+            .join(Asset, Asset.id == Face.asset_id)
+            .where(
+                Face.person_id == person_id,
+                Face.is_excluded.is_(False),
+                Face.asset_id.is_not(None),
+                Asset.deleted_at.is_(None),
+            )
+            .order_by(Face.created_at.asc(), Face.id.asc())
+        )
+        rows = self.session.exec(statement).all()
+        return [
+            candidate
+            for candidate in (self._thumbnail_candidate_from_row(row) for row in rows)
+            if candidate is not None
+        ]
+
     def merge_people(
         self,
         *,
         source_person: Person,
         target_person: Person,
     ) -> tuple[int, bool]:
-        source_thumbnail_valid = False
-        if source_person.thumbnail_face_id is not None:
-            source_thumbnail_valid = (
-                self.session.exec(
-                    select(Face.id).where(
-                        Face.id == source_person.thumbnail_face_id,
-                        Face.person_id == source_person.id,
-                        Face.is_excluded.is_(False),
-                    )
-                ).first()
-                is not None
-            )
-
         with self.session.begin():
             moved_result = self.session.exec(
                 select(Face.id).where(
@@ -143,14 +239,9 @@ class PeopleRepository:
                 .values(person_id=None)
             )
 
-            if (
-                target_person.thumbnail_face_id is None
-                and source_thumbnail_valid
-                and source_person.thumbnail_face_id is not None
-            ):
-                target_person.thumbnail_face_id = source_person.thumbnail_face_id
-
             source_person.thumbnail_face_id = None
+            source_person.thumbnail_path = None
+            source_person.thumbnail_manually_set = False
             self.session.add(target_person)
             self.session.add(source_person)
             self.session.delete(source_person)
@@ -304,3 +395,26 @@ class PeopleRepository:
             .subquery()
         )
         return tags_subquery, faces_subquery
+
+    @staticmethod
+    def _thumbnail_candidate_from_row(
+        row: Any,
+    ) -> PersonThumbnailCandidate | None:
+        if row is None:
+            return None
+        face_id, asset_id, master_path, mime_type, bounding_box, confidence = row
+        if (
+            asset_id is None
+            or not isinstance(master_path, str)
+            or not isinstance(mime_type, str)
+            or not isinstance(bounding_box, dict)
+        ):
+            return None
+        return PersonThumbnailCandidate(
+            face_id=face_id,
+            asset_id=asset_id,
+            master_path=master_path,
+            mime_type=mime_type,
+            bounding_box=bounding_box,
+            confidence=confidence,
+        )

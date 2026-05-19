@@ -30,6 +30,14 @@ class _FakeFaceRepository:
         return face
 
 
+class _FakeThumbnailService:
+    def __init__(self) -> None:
+        self.ensure_calls: list[str] = []
+
+    def ensure_thumbnail(self, *, person_id):
+        self.ensure_calls.append(str(person_id))
+
+
 class FaceManagementServiceTest(unittest.TestCase):
     def _face(self) -> Face:
         return Face(
@@ -53,18 +61,28 @@ class FaceManagementServiceTest(unittest.TestCase):
         face = self._face()
         person = self._person()
         repository = _FakeFaceRepository(face, person)
-        service = FaceManagementService(session=None, repository=repository)
+        thumbnail_service = _FakeThumbnailService()
+        service = FaceManagementService(
+            session=None,
+            repository=repository,
+            thumbnail_service=thumbnail_service,
+        )
 
         updated = service.update_face(face.id, person_id=person.id)
 
         self.assertEqual(updated.person_id, person.id)
         self.assertTrue(updated.is_confirmed)
         self.assertFalse(updated.is_excluded)
+        self.assertEqual(thumbnail_service.ensure_calls, [str(person.id)])
 
     def test_assigning_face_to_missing_person_fails(self) -> None:
         face = self._face()
         repository = _FakeFaceRepository(face, None)
-        service = FaceManagementService(session=None, repository=repository)
+        service = FaceManagementService(
+            session=None,
+            repository=repository,
+            thumbnail_service=_FakeThumbnailService(),
+        )
 
         with self.assertRaises(FaceManagementServiceError) as exc:
             service.update_face(face.id, person_id=uuid4())
@@ -76,7 +94,11 @@ class FaceManagementServiceTest(unittest.TestCase):
         face.is_excluded = True
         person = self._person()
         repository = _FakeFaceRepository(face, person)
-        service = FaceManagementService(session=None, repository=repository)
+        service = FaceManagementService(
+            session=None,
+            repository=repository,
+            thumbnail_service=_FakeThumbnailService(),
+        )
 
         with self.assertRaises(FaceManagementServiceError) as exc:
             service.update_face(face.id, person_id=person.id)
@@ -88,7 +110,12 @@ class FaceManagementServiceTest(unittest.TestCase):
         face.is_excluded = True
         person = self._person()
         repository = _FakeFaceRepository(face, person)
-        service = FaceManagementService(session=None, repository=repository)
+        thumbnail_service = _FakeThumbnailService()
+        service = FaceManagementService(
+            session=None,
+            repository=repository,
+            thumbnail_service=thumbnail_service,
+        )
 
         updated = service.update_face(
             face.id,
@@ -99,6 +126,7 @@ class FaceManagementServiceTest(unittest.TestCase):
         self.assertEqual(updated.person_id, person.id)
         self.assertFalse(updated.is_excluded)
         self.assertTrue(updated.is_confirmed)
+        self.assertEqual(thumbnail_service.ensure_calls, [str(person.id)])
 
 
 if __name__ == "__main__":

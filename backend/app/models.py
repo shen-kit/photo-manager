@@ -264,6 +264,11 @@ class Person(SQLModel, table=True):
         default=None,
         sa_column=Column(PGUUID(as_uuid=True), ForeignKey("faces.id"), nullable=True),
     )
+    thumbnail_path: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
+    thumbnail_manually_set: bool = Field(
+        default=False,
+        sa_column=Column(Boolean, nullable=False, server_default="false"),
+    )
     is_hidden: bool = Field(
         default=False,
         sa_column=Column(Boolean, nullable=False, server_default="false"),

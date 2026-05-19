@@ -24,6 +24,7 @@ from app.services.face_detection.service import (
     detect_faces,
 )
 from app.services.faces.repository import FaceRepository
+from app.services.people.thumbnails import PersonThumbnailService
 
 logger = logging.getLogger(__name__)
 
@@ -268,9 +269,11 @@ class FaceManagementService:
         session: Session,
         *,
         repository: FaceRepository | None = None,
+        thumbnail_service: PersonThumbnailService | None = None,
     ) -> None:
         self.session = session
         self.repository = repository or FaceRepository(session)
+        self.thumbnail_service = thumbnail_service or PersonThumbnailService(session)
 
     def update_face(
         self,
@@ -283,6 +286,7 @@ class FaceManagementService:
         face = self.repository.get_face(face_id)
         if face is None:
             raise FaceManagementServiceError(f"Face {face_id} not found")
+        previous_person_id = face.person_id
 
         current_excluded = face.is_excluded
         assigned_person_id = person_id if person_id is not ... else face.person_id
@@ -313,4 +317,12 @@ class FaceManagementService:
         elif assigned_person_id is not None:
             face.is_confirmed = True
 
-        return self.repository.update_face(face)
+        updated_face = self.repository.update_face(face)
+        impacted_person_ids = {
+            person_id
+            for person_id in {previous_person_id, updated_face.person_id}
+            if person_id is not None
+        }
+        for impacted_person_id in impacted_person_ids:
+            self.thumbnail_service.ensure_thumbnail(person_id=impacted_person_id)
+        return updated_face

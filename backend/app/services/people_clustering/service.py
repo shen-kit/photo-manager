@@ -15,6 +15,7 @@ from app.services.people_clustering.repository import (
     FaceClusterCandidate,
     PeopleClusteringRepository,
 )
+from app.services.people.thumbnails import PersonThumbnailService
 
 CLUSTER_DISTANCE_THRESHOLD = 0.4
 CLUSTER_TOP_K = 30
@@ -40,10 +41,12 @@ class PeopleClusteringService:
         *,
         repository: PeopleClusteringRepository | None = None,
         ai_model_repository: AIModelRepository | None = None,
+        thumbnail_service: PersonThumbnailService | None = None,
     ) -> None:
         self.session = session
         self.repository = repository or PeopleClusteringRepository(session)
         self.ai_model_repository = ai_model_repository or AIModelRepository(session)
+        self.thumbnail_service = thumbnail_service or PersonThumbnailService(session)
 
     def cluster_unassigned_faces(
         self,
@@ -82,7 +85,6 @@ class PeopleClusteringService:
         clusters_created = 0
         faces_assigned = 0
         skipped_small_clusters = 0
-        candidate_lookup = {candidate.id: candidate for candidate in candidates}
 
         for component in components:
             if len(component) < min_cluster_size:
@@ -94,13 +96,7 @@ class PeopleClusteringService:
                 face_ids=ordered_face_ids,
                 person_id=person.id,
             )
-            self.repository.set_person_thumbnail_face(
-                person_id=person.id,
-                thumbnail_face_id=self._select_thumbnail_face_id(
-                    ordered_face_ids,
-                    candidate_lookup,
-                ),
-            )
+            self.thumbnail_service.ensure_thumbnail(person_id=person.id)
             clusters_created += 1
 
         return PeopleClusteringSummary(
@@ -156,21 +152,3 @@ class PeopleClusteringService:
             components.append(component)
 
         return components
-
-    @staticmethod
-    def _select_thumbnail_face_id(
-        face_ids: list[UUID],
-        candidate_lookup: dict[UUID, FaceClusterCandidate],
-    ) -> UUID | None:
-        if not face_ids:
-            return None
-        ranked = sorted(
-            face_ids,
-            key=lambda face_id: (
-                candidate_lookup[face_id].crop_path is not None,
-                candidate_lookup[face_id].confidence or 0.0,
-                str(face_id),
-            ),
-            reverse=True,
-        )
-        return ranked[0]
