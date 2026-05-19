@@ -31,6 +31,28 @@ export type FaceSummary = {
   person: PersonSummary | null;
 };
 
+export type FaceBoundingBox = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  image_width: number;
+  image_height: number;
+};
+
+export type AssetFace = {
+  id: string;
+  asset_id: string | null;
+  person_id: string | null;
+  bounding_box: FaceBoundingBox | null;
+  detection_confidence: number | null;
+  crop_path: string | null;
+  crop_url: string | null;
+  is_confirmed: boolean;
+  is_excluded: boolean;
+  created_at: string;
+};
+
 export type AssetListItem = {
   id: string;
   captured_at: string | null;

@@ -5,6 +5,7 @@ import {
   DatabaseZap,
   LoaderCircle,
   LogOut,
+  ScanFace,
   SearchCheck,
   Star,
   Trash2,
@@ -17,6 +18,7 @@ import { AssetDetailModal } from "@/components/asset-detail-modal";
 import { FileDropzone } from "@/components/file-dropzone";
 import { LoginScreen } from "@/components/login-screen";
 import { useToast } from "@/components/toast-provider";
+import { triggerFaceBackfill } from "@/lib/api/faces";
 import { deleteAsset, ingestPath, listAssets, scanAssets, updateAsset, uploadAsset } from "@/lib/api/assets";
 import { fetchCurrentUser, getStoredUser, login, logout, refreshSession } from "@/lib/api/auth";
 import { clearSession, loadSession } from "@/lib/auth-store";
@@ -49,6 +51,7 @@ export function DeveloperDashboard() {
   const { pushToast } = useToast();
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
   const [pathValue, setPathValue] = useState("");
+  const [faceBackfillForce, setFaceBackfillForce] = useState(false);
 
   const assetsQuery = useInfiniteQuery({
     queryKey: ["assets"],
@@ -69,6 +72,15 @@ export function DeveloperDashboard() {
     mutationFn: scanAssets,
     onSuccess: async (data) => {
       pushToast(`Scan job queued: ${data.id.slice(0, 8)}`, "success");
+    },
+    onError: (error: Error) => pushToast(error.message, "error"),
+  });
+
+  const faceBackfillMutation = useMutation({
+    mutationFn: () => triggerFaceBackfill(faceBackfillForce),
+    onSuccess: async (job) => {
+      pushToast(`Face backfill queued: ${job.id.slice(0, 8)}`, "success");
+      await queryClient.invalidateQueries({ queryKey: ["jobs"] });
     },
     onError: (error: Error) => pushToast(error.message, "error"),
   });
@@ -217,6 +229,50 @@ export function DeveloperDashboard() {
       >
         <div className="grid gap-6 lg:grid-cols-[340px_minmax(0,1fr)]">
             <aside className="space-y-6">
+              <section className="rounded-[28px] border border-white/10 bg-black/25 p-5 shadow-panel backdrop-blur">
+                <div className="mb-4 flex items-center gap-3">
+                  <div className="rounded-2xl border border-emerald-400/20 bg-emerald-400/10 p-2 text-emerald-300">
+                    <ScanFace className="h-4 w-4" />
+                  </div>
+                  <div>
+                    <h2 className="text-sm font-semibold text-white">Face Backfill</h2>
+                    <p className="text-xs text-slate-400">Queue InsightFace detection for eligible image assets.</p>
+                  </div>
+                </div>
+                <div className="space-y-3">
+                  <label className="flex items-center gap-2 text-xs text-slate-300">
+                    <input
+                      type="checkbox"
+                      checked={faceBackfillForce}
+                      onChange={(event) => setFaceBackfillForce(event.target.checked)}
+                      className="h-4 w-4 rounded border-white/10 bg-black/20 text-emerald-400 focus:ring-emerald-400/40"
+                    />
+                    Force reprocess unconfirmed faces
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => faceBackfillMutation.mutate()}
+                    disabled={faceBackfillMutation.isPending}
+                    className="flex w-full items-center justify-center gap-2 rounded-2xl border border-emerald-400/30 bg-emerald-400/10 px-4 py-3 text-sm text-emerald-200 transition hover:bg-emerald-400/20 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {faceBackfillMutation.isPending ? (
+                      <LoaderCircle className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <ScanFace className="h-4 w-4" />
+                    )}
+                    Backfill faces
+                  </button>
+                  {faceBackfillMutation.data ? (
+                    <a href={`/jobs/${faceBackfillMutation.data.id}`} className="block text-xs text-emerald-300 underline">
+                      Job {faceBackfillMutation.data.id}
+                    </a>
+                  ) : null}
+                  {faceBackfillMutation.isError ? (
+                    <p className="text-xs text-rose-300">{faceBackfillMutation.error.message}</p>
+                  ) : null}
+                </div>
+              </section>
+
               <section className="rounded-[28px] border border-white/10 bg-black/25 p-5 shadow-panel backdrop-blur">
                 <div className="mb-4 flex items-center gap-3">
                   <div className="rounded-2xl border border-cyan-400/20 bg-cyan-400/10 p-2 text-cyan-300">
