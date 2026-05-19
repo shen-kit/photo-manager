@@ -58,3 +58,9 @@ class PersonAssetListResponse(SQLModel):
     page: int
     page_size: int
     total: int
+
+
+class PersonMergeResponse(SQLModel):
+    faces_moved: int
+    source_deleted: bool
+    target_person_id: UUID

@@ -24,6 +24,13 @@ class PersonDetail:
     thumbnail_crop_path: str | None
 
 
+@dataclass(frozen=True)
+class PersonMergeSummary:
+    faces_moved: int
+    source_deleted: bool
+    target_person_id: UUID
+
+
 class PeopleService:
     def __init__(self, session: Session, *, repository: PeopleRepository | None = None) -> None:
         self.session = session
@@ -120,6 +127,34 @@ class PeopleService:
                 detail="One or more people were not found",
             )
         return unique_person_ids
+
+    def merge_people(
+        self,
+        *,
+        source_person_id: UUID,
+        target_person_id: UUID,
+    ) -> PersonMergeSummary:
+        if source_person_id == target_person_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="source_person_id and target_person_id must differ",
+            )
+        source_person = self.repository.get_person(source_person_id)
+        target_person = self.repository.get_person(target_person_id)
+        if source_person is None or target_person is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Person not found",
+            )
+        faces_moved, source_deleted = self.repository.merge_people(
+            source_person=source_person,
+            target_person=target_person,
+        )
+        return PersonMergeSummary(
+            faces_moved=faces_moved,
+            source_deleted=source_deleted,
+            target_person_id=target_person_id,
+        )
 
 
 def get_people_service(session: Session = Depends(get_session)) -> PeopleService:

@@ -8,8 +8,13 @@ from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
 
-from app.api.v1.features.people import PeopleClusteringRequest, cluster_people
+from app.api.v1.features.people import (
+    PeopleClusteringRequest,
+    cluster_people,
+    merge_people,
+)
 from app.models import Job, User
+from app.services.people.service import PersonMergeSummary
 from app.services.people_clustering.tasks import cluster_faces
 
 
@@ -197,6 +202,29 @@ class PeopleApiTest(unittest.TestCase):
                 "skipped_small_clusters": 1,
             },
         )
+
+    def test_merge_people_endpoint_returns_summary(self) -> None:
+        source_person_id = uuid4()
+        target_person_id = uuid4()
+
+        class _PeopleService:
+            def merge_people(self, *, source_person_id, target_person_id):
+                return PersonMergeSummary(
+                    faces_moved=5,
+                    source_deleted=True,
+                    target_person_id=target_person_id,
+                )
+
+        response = merge_people(
+            source_person_id=source_person_id,
+            target_person_id=target_person_id,
+            people_service=_PeopleService(),
+            current_user=self.user,
+        )
+
+        self.assertEqual(response.faces_moved, 5)
+        self.assertTrue(response.source_deleted)
+        self.assertEqual(response.target_person_id, target_person_id)
 
 
 if __name__ == "__main__":

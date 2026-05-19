@@ -32,6 +32,10 @@ class FaceProcessingServiceError(RuntimeError):
     pass
 
 
+class FaceManagementServiceError(RuntimeError):
+    pass
+
+
 @dataclass(frozen=True)
 class FaceProcessingResult:
     asset_id: UUID
@@ -256,3 +260,57 @@ class FaceProcessingService:
             "image_width": box.image_width,
             "image_height": box.image_height,
         }
+
+
+class FaceManagementService:
+    def __init__(
+        self,
+        session: Session,
+        *,
+        repository: FaceRepository | None = None,
+    ) -> None:
+        self.session = session
+        self.repository = repository or FaceRepository(session)
+
+    def update_face(
+        self,
+        face_id: UUID,
+        *,
+        person_id: UUID | None | object = ...,
+        is_confirmed: bool | None | object = ...,
+        is_excluded: bool | None | object = ...,
+    ) -> Face:
+        face = self.repository.get_face(face_id)
+        if face is None:
+            raise FaceManagementServiceError(f"Face {face_id} not found")
+
+        current_excluded = face.is_excluded
+        assigned_person_id = person_id if person_id is not ... else face.person_id
+        resulting_excluded = (
+            is_excluded if is_excluded is not ... else current_excluded
+        )
+
+        if person_id is not ... and person_id is not None:
+            person = self.repository.get_person(person_id)
+            if person is None:
+                raise FaceManagementServiceError(f"Person {person_id} not found")
+            if current_excluded and is_excluded is not False:
+                raise FaceManagementServiceError(
+                    "Excluded face cannot be assigned without explicitly unexcluding it"
+                )
+
+        if assigned_person_id is not None and resulting_excluded:
+            raise FaceManagementServiceError(
+                "Excluded face cannot remain assigned to a person"
+            )
+
+        if person_id is not ...:
+            face.person_id = person_id
+        if is_excluded is not ...:
+            face.is_excluded = bool(is_excluded)
+        if is_confirmed is not ...:
+            face.is_confirmed = bool(is_confirmed)
+        elif assigned_person_id is not None:
+            face.is_confirmed = True
+
+        return self.repository.update_face(face)

@@ -18,6 +18,8 @@ class _FakePeopleRepository:
         self.face_belongs = True
         self.person_rows: dict[str, PersonReadRow] = {}
         self.existing_person_ids: list = []
+        self.merge_calls: list[tuple[str, str]] = []
+        self.merge_result = (0, True)
 
     def list_people(self, *, include_hidden: bool, search: str | None):
         return []
@@ -46,6 +48,10 @@ class _FakePeopleRepository:
 
     def list_assets_for_person(self, *, person_id, limit, offset):
         return []
+
+    def merge_people(self, *, source_person, target_person):
+        self.merge_calls.append((str(source_person.id), str(target_person.id)))
+        return self.merge_result
 
 
 class PeopleServiceTest(unittest.TestCase):
@@ -99,6 +105,43 @@ class PeopleServiceTest(unittest.TestCase):
             service.validate_person_ids([person_a, person_b])
 
         self.assertEqual(exc.exception.status_code, 404)
+
+    def test_merge_people_moves_faces_and_returns_summary(self) -> None:
+        source = self._person()
+        target = self._person()
+        target.name = "Target"
+        target.is_hidden = True
+        repo = _FakePeopleRepository(source)
+        repo.person = None
+        people_by_id = {source.id: source, target.id: target}
+        repo.get_person = lambda person_id: people_by_id.get(person_id)
+        repo.merge_result = (4, True)
+        service = PeopleService(session=None, repository=repo)
+
+        summary = service.merge_people(
+            source_person_id=source.id,
+            target_person_id=target.id,
+        )
+
+        self.assertEqual(summary.faces_moved, 4)
+        self.assertTrue(summary.source_deleted)
+        self.assertEqual(summary.target_person_id, target.id)
+        self.assertEqual(repo.merge_calls, [(str(source.id), str(target.id))])
+        self.assertEqual(target.name, "Target")
+        self.assertTrue(target.is_hidden)
+
+    def test_merge_people_requires_distinct_people(self) -> None:
+        person = self._person()
+        repo = _FakePeopleRepository(person)
+        service = PeopleService(session=None, repository=repo)
+
+        with self.assertRaises(HTTPException) as exc:
+            service.merge_people(
+                source_person_id=person.id,
+                target_person_id=person.id,
+            )
+
+        self.assertEqual(exc.exception.status_code, 400)
 
 
 if __name__ == "__main__":

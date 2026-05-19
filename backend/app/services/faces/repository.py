@@ -5,7 +5,7 @@ from uuid import UUID
 
 from sqlmodel import Session, col, delete, func, select
 
-from app.models import Asset, Face
+from app.models import Asset, Face, Person
 
 
 class FaceRepository:
@@ -14,6 +14,12 @@ class FaceRepository:
 
     def get_asset(self, asset_id: UUID) -> Asset | None:
         return self.session.get(Asset, asset_id)
+
+    def get_face(self, face_id: UUID) -> Face | None:
+        return self.session.get(Face, face_id)
+
+    def get_person(self, person_id: UUID) -> Person | None:
+        return self.session.get(Person, person_id)
 
     def asset_has_faces(self, *, asset_id: UUID, model_id: int) -> bool:
         statement = select(Face.id).where(
@@ -75,6 +81,12 @@ class FaceRepository:
             return
         self.session.add_all(faces)
         self.session.commit()
+
+    def update_face(self, face: Face) -> Face:
+        self.session.add(face)
+        self.session.commit()
+        self.session.refresh(face)
+        return face
 
     def count_assets_pending_face_processing(
         self, *, model_id: int, force: bool

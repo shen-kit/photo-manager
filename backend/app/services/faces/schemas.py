@@ -26,3 +26,10 @@ class AssetFaceRead(SQLModel):
     is_confirmed: bool
     is_excluded: bool
     created_at: datetime
+    updated_at: datetime
+
+
+class FaceUpdateRequest(SQLModel):
+    person_id: UUID | None = None
+    is_confirmed: bool | None = None
+    is_excluded: bool | None = None

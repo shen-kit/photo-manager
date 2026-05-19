@@ -15,6 +15,7 @@ from app.services.people.schemas import (
     FaceSummary,
     PersonAssetItem,
     PersonAssetListResponse,
+    PersonMergeResponse,
     PersonRead,
     PersonSummary,
     PersonUpdateRequest,
@@ -212,4 +213,26 @@ def list_person_assets(
         page=page,
         page_size=page_size,
         total=total,
+    )
+
+
+@router.post(
+    "/people/{source_person_id}/merge-into/{target_person_id}",
+    response_model=PersonMergeResponse,
+)
+def merge_people(
+    source_person_id: UUID,
+    target_person_id: UUID,
+    people_service: PeopleService = Depends(get_people_service),
+    current_user: User = Depends(get_current_user),
+) -> PersonMergeResponse:
+    del current_user
+    summary = people_service.merge_people(
+        source_person_id=source_person_id,
+        target_person_id=target_person_id,
+    )
+    return PersonMergeResponse(
+        faces_moved=summary.faces_moved,
+        source_deleted=summary.source_deleted,
+        target_person_id=summary.target_person_id,
     )

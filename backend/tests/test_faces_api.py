@@ -14,9 +14,12 @@ from app.api.v1.features.faces import (
     backfill_asset_faces,
     list_asset_faces,
     process_asset_faces,
+    update_face,
 )
 from app.core.auth import get_current_user
 from app.models import Face, Job, User
+from app.services.faces.schemas import FaceUpdateRequest
+from app.services.faces.service import FaceManagementServiceError
 
 
 class _FakeJobService:
@@ -53,6 +56,7 @@ class _FakeFaceQueryService:
         self.exists = exists
         self.faces = faces or []
         self.required_asset_ids = []
+        self.session = object()
 
     def require_active_asset(self, asset_id):
         self.required_asset_ids.append(asset_id)
@@ -212,6 +216,63 @@ class FacesApiTest(unittest.TestCase):
 
         self.assertEqual(get_exc.exception.status_code, 404)
         self.assertEqual(process_exc.exception.status_code, 404)
+
+    def test_update_face_endpoint_hides_embeddings_and_returns_updated_face(self) -> None:
+        face = Face(
+            id=uuid4(),
+            asset_id=uuid4(),
+            person_id=uuid4(),
+            bounding_box={
+                "x": 10,
+                "y": 20,
+                "width": 30,
+                "height": 40,
+                "image_width": 300,
+                "image_height": 200,
+            },
+            embedding=[0.1] * 512,
+            confidence=0.95,
+            crop_path=None,
+            is_confirmed=True,
+            is_excluded=False,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+
+        with patch(
+            "app.api.v1.features.faces.FaceManagementService.update_face",
+            return_value=face,
+        ) as update_mock:
+            response = update_face(
+                face_id=face.id,
+                payload=FaceUpdateRequest(person_id=face.person_id),
+                request=self.request,
+                face_query_service=_FakeFaceQueryService(),
+                current_user=self.user,
+            )
+
+        update_mock.assert_called_once()
+        payload = response.model_dump()
+        self.assertNotIn("embedding", payload)
+        self.assertTrue(payload["is_confirmed"])
+
+    def test_update_face_endpoint_returns_400_for_invalid_assignment(self) -> None:
+        with patch(
+            "app.api.v1.features.faces.FaceManagementService.update_face",
+            side_effect=FaceManagementServiceError(
+                "Excluded face cannot be assigned without explicitly unexcluding it"
+            ),
+        ):
+            with self.assertRaises(HTTPException) as exc:
+                update_face(
+                    face_id=uuid4(),
+                    payload=FaceUpdateRequest(person_id=uuid4()),
+                    request=self.request,
+                    face_query_service=_FakeFaceQueryService(),
+                    current_user=self.user,
+                )
+
+        self.assertEqual(exc.exception.status_code, 400)
 
     def test_authentication_helper_rejects_missing_credentials(self) -> None:
         with self.assertRaises(HTTPException) as exc:

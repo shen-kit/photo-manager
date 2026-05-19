@@ -8,7 +8,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from app.core.auth import get_current_user
 from app.models import Face, User
 from app.services.faces.query import FaceQueryService, get_face_query_service
-from app.services.faces.schemas import AssetFaceRead, FaceBoundingBoxRead
+from app.services.faces.schemas import (
+    AssetFaceRead,
+    FaceBoundingBoxRead,
+    FaceUpdateRequest,
+)
+from app.services.faces.service import FaceManagementService, FaceManagementServiceError
 from app.services.faces.tasks import create_backfill_job
 from app.services.jobs.queue import (
     enqueue_asset_faces_job,
@@ -42,6 +47,7 @@ def _build_face_response(request: Request, face: Face) -> AssetFaceRead:
         is_confirmed=face.is_confirmed,
         is_excluded=face.is_excluded,
         created_at=face.created_at,
+        updated_at=face.updated_at,
     )
 
 
@@ -109,3 +115,26 @@ def list_asset_faces(
     del current_user
     faces = face_query_service.list_faces_for_asset(asset_id)
     return [_build_face_response(request, face) for face in faces]
+
+
+@router.patch("/faces/{face_id}", response_model=AssetFaceRead)
+def update_face(
+    face_id: UUID,
+    payload: FaceUpdateRequest,
+    request: Request,
+    face_query_service: FaceQueryService = Depends(get_face_query_service),
+    current_user: User = Depends(get_current_user),
+) -> AssetFaceRead:
+    del current_user
+    updates = payload.model_dump(exclude_unset=True)
+    try:
+        face = FaceManagementService(face_query_service.session).update_face(
+            face_id,
+            **updates,
+        )
+    except FaceManagementServiceError as exc:
+        detail = str(exc)
+        if "not found" in detail.lower():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail) from exc
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail) from exc
+    return _build_face_response(request, face)

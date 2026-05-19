@@ -98,6 +98,66 @@ class PeopleRepository:
         self.session.refresh(person)
         return person
 
+    def merge_people(
+        self,
+        *,
+        source_person: Person,
+        target_person: Person,
+    ) -> tuple[int, bool]:
+        source_thumbnail_valid = False
+        if source_person.thumbnail_face_id is not None:
+            source_thumbnail_valid = (
+                self.session.exec(
+                    select(Face.id).where(
+                        Face.id == source_person.thumbnail_face_id,
+                        Face.person_id == source_person.id,
+                        Face.is_excluded.is_(False),
+                    )
+                ).first()
+                is not None
+            )
+
+        with self.session.begin():
+            moved_result = self.session.exec(
+                select(Face.id).where(
+                    Face.person_id == source_person.id,
+                    Face.is_excluded.is_(False),
+                )
+            )
+            moved_face_ids = list(moved_result.all())
+            faces_moved = 0
+            if moved_face_ids:
+                update_result = self.session.exec(
+                    Face.__table__.update()
+                    .where(Face.id.in_(moved_face_ids))
+                    .values(person_id=target_person.id)
+                )
+                faces_moved = update_result.rowcount or 0
+
+            self.session.exec(
+                Face.__table__.update()
+                .where(
+                    Face.person_id == source_person.id,
+                    Face.is_excluded.is_(True),
+                )
+                .values(person_id=None)
+            )
+
+            if (
+                target_person.thumbnail_face_id is None
+                and source_thumbnail_valid
+                and source_person.thumbnail_face_id is not None
+            ):
+                target_person.thumbnail_face_id = source_person.thumbnail_face_id
+
+            source_person.thumbnail_face_id = None
+            self.session.add(target_person)
+            self.session.add(source_person)
+            self.session.delete(source_person)
+
+        self.session.refresh(target_person)
+        return faces_moved, True
+
     def list_existing_person_ids(self, person_ids: list[UUID]) -> list[UUID]:
         if not person_ids:
             return []
