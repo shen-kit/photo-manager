@@ -31,6 +31,24 @@ from app.services.search.service import SearchService
 router = APIRouter()
 
 
+def _parse_person_ids(raw_person_ids: str | None) -> list[UUID]:
+    if raw_person_ids is None or not raw_person_ids.strip():
+        return []
+    values: list[UUID] = []
+    for item in raw_person_ids.split(","):
+        normalized = item.strip()
+        if not normalized:
+            continue
+        try:
+            values.append(UUID(normalized))
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="person_ids must be a comma-separated list of UUIDs",
+            ) from exc
+    return values
+
+
 def _thumbnail_url(request: Request, asset_id: UUID) -> str:
     return (
         str(request.base_url).rstrip("/")
@@ -81,15 +99,22 @@ async def backfill_clip_embeddings(
 @router.get("/", response_model=SearchResponse)
 def search_assets(
     request: Request,
-    query: str = Query(min_length=1),
+    query: str | None = Query(default=None),
+    person_ids: str | None = Query(default=None),
     limit: int = Query(default=SEARCH_DEFAULT_LIMIT, ge=1, le=SEARCH_MAX_LIMIT),
     offset: int = Query(default=0, ge=0),
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> SearchResponse:
     del current_user
+    parsed_person_ids = _parse_person_ids(person_ids)
     try:
-        results = SearchService(session).search(query=query, limit=limit, offset=offset)
+        results = SearchService(session).search(
+            query=query,
+            limit=limit,
+            offset=offset,
+            person_ids=parsed_person_ids,
+        )
     except EmbeddingServiceError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

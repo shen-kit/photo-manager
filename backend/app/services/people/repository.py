@@ -1,0 +1,246 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+from uuid import UUID
+
+from sqlalchemy import case, func
+from sqlmodel import Session, select
+
+from app.models import Asset, AssetTag, Face, Person, Tag
+
+
+@dataclass(frozen=True)
+class PersonReadRow:
+    person: Person
+    face_count: int
+    asset_count: int
+    thumbnail_crop_path: str | None
+
+
+class PeopleRepository:
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def list_people(
+        self,
+        *,
+        include_hidden: bool,
+        search: str | None,
+    ) -> list[PersonReadRow]:
+        stats_subquery = self._person_stats_subquery()
+        statement = (
+            select(
+                Person,
+                func.coalesce(stats_subquery.c.face_count, 0),
+                func.coalesce(stats_subquery.c.asset_count, 0),
+                Face.crop_path,
+            )
+            .outerjoin(stats_subquery, stats_subquery.c.person_id == Person.id)
+            .outerjoin(Face, Face.id == Person.thumbnail_face_id)
+        )
+        if not include_hidden:
+            statement = statement.where(Person.is_hidden.is_(False))
+        if search:
+            statement = statement.where(Person.name.ilike(f"%{search}%"))
+        statement = statement.order_by(
+            func.coalesce(stats_subquery.c.asset_count, 0).desc(),
+            func.coalesce(stats_subquery.c.face_count, 0).desc(),
+            Person.name.asc().nullslast(),
+            Person.id.asc(),
+        )
+        return [
+            PersonReadRow(
+                person=person,
+                face_count=int(face_count),
+                asset_count=int(asset_count),
+                thumbnail_crop_path=crop_path,
+            )
+            for person, face_count, asset_count, crop_path in self.session.exec(
+                statement
+            ).all()
+        ]
+
+    def get_person(self, person_id: UUID) -> Person | None:
+        return self.session.get(Person, person_id)
+
+    def get_person_read_row(self, person_id: UUID) -> PersonReadRow | None:
+        stats_subquery = self._person_stats_subquery()
+        statement = (
+            select(
+                Person,
+                func.coalesce(stats_subquery.c.face_count, 0),
+                func.coalesce(stats_subquery.c.asset_count, 0),
+                Face.crop_path,
+            )
+            .outerjoin(stats_subquery, stats_subquery.c.person_id == Person.id)
+            .outerjoin(Face, Face.id == Person.thumbnail_face_id)
+            .where(Person.id == person_id)
+        )
+        row = self.session.exec(statement).first()
+        if row is None:
+            return None
+        person, face_count, asset_count, crop_path = row
+        return PersonReadRow(
+            person=person,
+            face_count=int(face_count),
+            asset_count=int(asset_count),
+            thumbnail_crop_path=crop_path,
+        )
+
+    def face_belongs_to_person(self, *, face_id: UUID, person_id: UUID) -> bool:
+        statement = select(Face.id).where(Face.id == face_id, Face.person_id == person_id)
+        return self.session.exec(statement).first() is not None
+
+    def update_person(self, person: Person) -> Person:
+        self.session.add(person)
+        self.session.commit()
+        self.session.refresh(person)
+        return person
+
+    def list_existing_person_ids(self, person_ids: list[UUID]) -> list[UUID]:
+        if not person_ids:
+            return []
+        statement = select(Person.id).where(Person.id.in_(person_ids))
+        return list(self.session.exec(statement).all())
+
+    def count_assets_for_people(self, *, person_ids: list[UUID]) -> int:
+        matching_assets = self._matching_assets_by_people_subquery(person_ids)
+        statement = select(func.count()).select_from(matching_assets)
+        return int(self.session.exec(statement).one())
+
+    def list_assets_for_people(
+        self,
+        *,
+        person_ids: list[UUID],
+        limit: int,
+        offset: int,
+    ) -> list[tuple[Asset, list[dict[str, Any]] | None, list[dict[str, Any]] | None]]:
+        matching_assets = self._matching_assets_by_people_subquery(person_ids)
+        return self._hydrate_assets_from_id_subquery(
+            matching_assets,
+            limit=limit,
+            offset=offset,
+        )
+
+    def count_assets_for_person(self, *, person_id: UUID) -> int:
+        return self.count_assets_for_people(person_ids=[person_id])
+
+    def list_assets_for_person(
+        self,
+        *,
+        person_id: UUID,
+        limit: int,
+        offset: int,
+    ) -> list[tuple[Asset, list[dict[str, Any]] | None, list[dict[str, Any]] | None]]:
+        return self.list_assets_for_people(
+            person_ids=[person_id],
+            limit=limit,
+            offset=offset,
+        )
+
+    def _person_stats_subquery(self):
+        return (
+            select(
+                Face.person_id.label("person_id"),
+                func.count(Face.id).label("face_count"),
+                func.count(func.distinct(Face.asset_id)).label("asset_count"),
+            )
+            .where(
+                Face.person_id.is_not(None),
+                Face.is_excluded.is_(False),
+            )
+            .group_by(Face.person_id)
+            .subquery()
+        )
+
+    def _matching_assets_by_people_subquery(self, person_ids: list[UUID]):
+        return (
+            select(Face.asset_id.label("asset_id"))
+            .join(Asset, Asset.id == Face.asset_id)
+            .where(
+                Asset.deleted_at.is_(None),
+                Face.asset_id.is_not(None),
+                Face.is_excluded.is_(False),
+                Face.person_id.in_(person_ids),
+            )
+            .group_by(Face.asset_id)
+            .having(func.count(func.distinct(Face.person_id)) == len(person_ids))
+            .subquery()
+        )
+
+    def _hydrate_assets_from_id_subquery(
+        self,
+        asset_ids_subquery,
+        *,
+        limit: int,
+        offset: int,
+    ) -> list[tuple[Asset, list[dict[str, Any]] | None, list[dict[str, Any]] | None]]:
+        ordered_assets_subquery = (
+            select(Asset.id)
+            .join(asset_ids_subquery, asset_ids_subquery.c.asset_id == Asset.id)
+            .where(Asset.deleted_at.is_(None))
+            .order_by(Asset.captured_at.desc().nullslast(), Asset.created_at.desc())
+            .offset(offset)
+            .limit(limit)
+            .subquery()
+        )
+        asset_ids = list(self.session.exec(select(ordered_assets_subquery.c.id)).all())
+        if not asset_ids:
+            return []
+        ordering = case(
+            {asset_id: index for index, asset_id in enumerate(asset_ids)},
+            value=Asset.id,
+        )
+        tags_subquery, faces_subquery = self._asset_relations_subqueries()
+        statement = (
+            select(Asset, tags_subquery.c.tags, faces_subquery.c.faces)
+            .where(Asset.id.in_(asset_ids))
+            .outerjoin(tags_subquery, tags_subquery.c.asset_id == Asset.id)
+            .outerjoin(faces_subquery, faces_subquery.c.asset_id == Asset.id)
+            .order_by(ordering)
+        )
+        return list(self.session.exec(statement).all())
+
+    def _asset_relations_subqueries(self) -> tuple[Any, Any]:
+        tags_subquery = (
+            select(
+                AssetTag.asset_id.label("asset_id"),
+                func.json_agg(
+                    func.json_build_object(
+                        "id",
+                        Tag.id,
+                        "name",
+                        Tag.name,
+                        "path",
+                        Tag.path,
+                    )
+                ).label("tags"),
+            )
+            .select_from(AssetTag)
+            .join(Tag, Tag.id == AssetTag.tag_id)
+            .group_by(AssetTag.asset_id)
+            .subquery()
+        )
+
+        faces_subquery = (
+            select(
+                Face.asset_id.label("asset_id"),
+                func.json_agg(
+                    func.json_build_object(
+                        "id",
+                        Face.id,
+                        "person_id",
+                        Person.id,
+                        "person_name",
+                        Person.name,
+                    )
+                ).label("faces"),
+            )
+            .select_from(Face)
+            .join(Person, Person.id == Face.person_id, isouter=True)
+            .where(Face.is_excluded.is_(False))
+            .group_by(Face.asset_id)
+            .subquery()
+        )
+        return tags_subquery, faces_subquery

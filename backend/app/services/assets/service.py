@@ -505,6 +505,7 @@ class AssetService:
             )
             .select_from(Face)
             .join(Person, Person.id == Face.person_id, isouter=True)
+            .where(Face.is_excluded.is_(False))
             .group_by(Face.asset_id)
             .subquery()
         )
