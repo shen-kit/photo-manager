@@ -51,6 +51,35 @@ export type AssetFace = {
   is_confirmed: boolean;
   is_excluded: boolean;
   created_at: string;
+  updated_at: string;
+};
+
+export type Person = {
+  id: string;
+  name: string | null;
+  thumbnail_face_id: string | null;
+  thumbnail_crop_path: string | null;
+  thumbnail_crop_url: string | null;
+  face_count: number;
+  asset_count: number;
+  is_hidden: boolean;
+};
+
+export type PersonListParams = {
+  include_hidden?: boolean;
+  search?: string;
+};
+
+export type PersonUpdatePayload = {
+  name?: string | null;
+  is_hidden?: boolean;
+  thumbnail_face_id?: string | null;
+};
+
+export type PersonMergeResponse = {
+  faces_moved: number;
+  source_deleted: boolean;
+  target_person_id: string;
 };
 
 export type AssetListItem = {

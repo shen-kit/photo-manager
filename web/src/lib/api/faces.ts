@@ -24,3 +24,16 @@ export function getAssetFaces(assetId: string) {
     auth: true,
   });
 }
+
+
+export function updateAssetFace(faceId: string, payload: {
+  person_id?: string | null;
+  is_confirmed?: boolean;
+  is_excluded?: boolean;
+}) {
+  return apiRequest<AssetFace>(`/api/v1/faces/${faceId}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+    auth: true,
+  });
+}
