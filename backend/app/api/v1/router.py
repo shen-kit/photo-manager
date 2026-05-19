@@ -5,6 +5,7 @@ from app.api.v1.features.assets import router as assets_router
 from app.api.v1.features.faces import router as faces_router
 from app.api.v1.features.jobs import router as jobs_router
 from app.api.v1.features.notifications import router as notifications_router
+from app.api.v1.features.people import router as people_router
 from app.api.v1.features.search import router as search_router
 
 
@@ -16,4 +17,5 @@ api_v1_router.include_router(jobs_router, prefix="/jobs", tags=["jobs"])
 api_v1_router.include_router(
     notifications_router, prefix="/notifications", tags=["notifications"]
 )
+api_v1_router.include_router(people_router, tags=["people"])
 api_v1_router.include_router(search_router, prefix="/search", tags=["search"])

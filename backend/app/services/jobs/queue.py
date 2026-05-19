@@ -17,6 +17,7 @@ GENERATE_MISSING_ASSET_CLIP_EMBEDDINGS_JOB_NAME = (
 )
 PROCESS_ASSET_FACES_JOB_NAME = "process_asset_faces"
 GENERATE_MISSING_ASSET_FACES_JOB_NAME = "generate_missing_asset_faces"
+CLUSTER_FACES_JOB_NAME = "cluster_faces"
 
 
 async def enqueue_worker_job(job_name: str, *args: object) -> bool:
@@ -93,4 +94,20 @@ async def enqueue_missing_asset_faces_job(
         GENERATE_MISSING_ASSET_FACES_JOB_NAME,
         str(job_id),
         force,
+    )
+
+
+async def enqueue_face_clustering_job(
+    job_id: UUID,
+    *,
+    threshold: float,
+    top_k: int,
+    min_cluster_size: int,
+) -> bool:
+    return await enqueue_worker_job(
+        CLUSTER_FACES_JOB_NAME,
+        str(job_id),
+        threshold,
+        top_k,
+        min_cluster_size,
     )

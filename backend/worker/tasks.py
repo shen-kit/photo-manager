@@ -8,6 +8,9 @@ from app.services.faces.tasks import (
     generate_missing_asset_faces as generate_missing_asset_faces_job,
     process_asset_faces as process_asset_faces_job,
 )
+from app.services.people_clustering.tasks import (
+    cluster_faces as cluster_faces_job,
+)
 from app.services.assets.jobs import (
     process_asset_metadata as process_asset_metadata_job,
 )
@@ -58,3 +61,19 @@ async def generate_missing_asset_faces(
     force: bool = False,
 ) -> dict[str, int]:
     return await generate_missing_asset_faces_job(ctx, job_id, force)
+
+
+async def cluster_faces(
+    ctx: dict[str, object],
+    job_id: str,
+    threshold: float,
+    top_k: int,
+    min_cluster_size: int,
+) -> dict[str, int]:
+    return await cluster_faces_job(
+        ctx,
+        job_id,
+        threshold,
+        top_k,
+        min_cluster_size,
+    )

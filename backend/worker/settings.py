@@ -7,6 +7,7 @@ from arq.connections import RedisSettings
 
 from app.core.logging import setup_logging
 from .tasks import (
+    cluster_faces,
     generate_asset_clip_embedding,
     generate_missing_asset_clip_embeddings,
     generate_missing_asset_faces,
@@ -24,6 +25,7 @@ class WorkerSettings:
         generate_missing_asset_clip_embeddings,
         process_asset_faces,
         generate_missing_asset_faces,
+        cluster_faces,
     ]
     redis_settings = RedisSettings.from_dsn(
         os.getenv("REDIS_URL", "redis://redis:6379/0")
