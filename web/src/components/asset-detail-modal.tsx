@@ -8,12 +8,13 @@ import { createPortal } from "react-dom";
 import { useToast } from "@/components/toast-provider";
 import { getAsset } from "@/lib/api/assets";
 import { getAssetFaces, triggerAssetFaceProcessing, updateAssetFace } from "@/lib/api/faces";
-import { listPeople } from "@/lib/api/people";
+import { listPeople, updatePersonThumbnail } from "@/lib/api/people";
 import type { AssetFace, Person } from "@/lib/types";
 
 type AssetDetailModalProps = {
   assetId: string | null;
   onClose: () => void;
+  thumbnailPersonId?: string | null;
 };
 
 function faceBoxStyle(face: AssetFace) {
@@ -34,7 +35,7 @@ function personLabel(person: Person) {
   return person.name?.trim() || "Unnamed person";
 }
 
-export function AssetDetailModal({ assetId, onClose }: AssetDetailModalProps) {
+export function AssetDetailModal({ assetId, onClose, thumbnailPersonId = null }: AssetDetailModalProps) {
   const [mounted, setMounted] = useState(false);
   const [forceFaceProcessing, setForceFaceProcessing] = useState(false);
   const [showFaces, setShowFaces] = useState(false);
@@ -82,6 +83,17 @@ export function AssetDetailModal({ assetId, onClose }: AssetDetailModalProps) {
       await queryClient.invalidateQueries({ queryKey: ["people"] });
       await queryClient.invalidateQueries({ queryKey: ["person-assets"] });
       await queryClient.invalidateQueries({ queryKey: ["search"] });
+    },
+    onError: (mutationError: Error) => pushToast(mutationError.message, "error"),
+  });
+
+  const updateThumbnailMutation = useMutation({
+    mutationFn: ({ personId, assetId }: { personId: string; assetId: string }) =>
+      updatePersonThumbnail(personId, assetId),
+    onSuccess: async () => {
+      pushToast("Person thumbnail updated", "success");
+      await queryClient.invalidateQueries({ queryKey: ["person", thumbnailPersonId] });
+      await queryClient.invalidateQueries({ queryKey: ["people"] });
     },
     onError: (mutationError: Error) => pushToast(mutationError.message, "error"),
   });
@@ -243,6 +255,24 @@ export function AssetDetailModal({ assetId, onClose }: AssetDetailModalProps) {
                       />
                       Force reprocess unconfirmed
                     </label>
+                    {thumbnailPersonId && isImage ? (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          updateThumbnailMutation.mutate({
+                            personId: thumbnailPersonId,
+                            assetId: assetId as string,
+                          })
+                        }
+                        disabled={updateThumbnailMutation.isPending}
+                        className="flex items-center gap-2 rounded-2xl border border-amber-400/30 bg-amber-400/10 px-4 py-2 text-sm text-amber-200 transition hover:bg-amber-400/20 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {updateThumbnailMutation.isPending ? (
+                          <LoaderCircle className="h-4 w-4 animate-spin" />
+                        ) : null}
+                        Use image as thumbnail
+                      </button>
+                    ) : null}
                   </div>
                   {!isImage ? (
                     <p className="mt-3 text-xs text-slate-500">Face detection is only available for image assets.</p>
@@ -277,7 +307,7 @@ export function AssetDetailModal({ assetId, onClose }: AssetDetailModalProps) {
                             {face.is_excluded ? <span className="rounded-full border border-rose-400/30 bg-rose-400/10 px-2 py-1 text-[11px] text-rose-200">Excluded</span> : null}
                           </div>
 
-                          <div className="mt-3 grid gap-2 md:grid-cols-[minmax(0,1fr)_auto_auto_auto]">
+                          <div className="mt-3 grid gap-2 md:grid-cols-[minmax(0,1fr)_auto_auto_auto_auto]">
                             <select
                               value={selectedPersonByFaceId[face.id] ?? face.person_id ?? ""}
                               onChange={(event) =>

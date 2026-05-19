@@ -8,7 +8,7 @@ import { AppShell } from "@/components/app-shell";
 import { AssetDetailModal } from "@/components/asset-detail-modal";
 import { LoginScreen } from "@/components/login-screen";
 import { useToast } from "@/components/toast-provider";
-import { getPerson, getPersonAssets, listPeople, mergePeople, updatePerson } from "@/lib/api/people";
+import { getPerson, getPersonAssets, listPeople, mergePeople, updatePerson, updatePersonThumbnail } from "@/lib/api/people";
 import { useSessionBootstrap } from "@/lib/use-session-bootstrap";
 import type { AssetListItem } from "@/lib/types";
 
@@ -66,6 +66,16 @@ export function PersonDetailPage({ personId }: { personId: string }) {
       pushToast(`Merged ${summary.faces_moved} faces`, "success");
       await queryClient.invalidateQueries({ queryKey: ["people"] });
       window.location.href = `/people/${summary.target_person_id}`;
+    },
+    onError: (error: Error) => pushToast(error.message, "error"),
+  });
+
+  const updateThumbnailMutation = useMutation({
+    mutationFn: (assetId: string) => updatePersonThumbnail(personId, assetId),
+    onSuccess: async () => {
+      pushToast("Person thumbnail updated", "success");
+      await queryClient.invalidateQueries({ queryKey: ["person", personId] });
+      await queryClient.invalidateQueries({ queryKey: ["people"] });
     },
     onError: (error: Error) => pushToast(error.message, "error"),
   });
@@ -137,15 +147,15 @@ export function PersonDetailPage({ personId }: { personId: string }) {
               {person ? (
                 <div className="space-y-4">
                   <div className="overflow-hidden rounded-3xl border border-white/10 bg-black/20">
-                    {person.thumbnail_crop_url ? (
+                    {person.thumbnail_url ? (
                       <img
-                        src={person.thumbnail_crop_url}
+                        src={person.thumbnail_url}
                         alt={person.name ?? "Unnamed person"}
                         className="aspect-square w-full object-cover"
                       />
                     ) : (
                       <div className="flex aspect-square items-center justify-center text-sm text-slate-500">
-                        No face crop
+                        No person thumbnail
                       </div>
                     )}
                   </div>
@@ -184,8 +194,9 @@ export function PersonDetailPage({ personId }: { personId: string }) {
                         {person.is_hidden ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
                       </button>
                     </div>
-                    <div className="text-xs text-slate-400">
-                      Thumbnail face: {person.thumbnail_face_id ?? "none"}
+                    <div className="space-y-1 text-xs text-slate-400">
+                      <div>Thumbnail face: {person.thumbnail_face_id ?? "none"}</div>
+                      <div>Thumbnail mode: {person.thumbnail_manually_set ? "manual" : "auto"}</div>
                     </div>
                   </div>
                 </div>
@@ -269,8 +280,20 @@ export function PersonDetailPage({ personId }: { personId: string }) {
                       </div>
                     </button>
                     <div className="space-y-2 p-4">
-                      <p className="truncate text-sm font-semibold text-white">{asset.description || asset.id.slice(0, 8)}</p>
-                      <p className="text-xs text-slate-400">{formatDimension(asset)}</p>
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-semibold text-white">{asset.description || asset.id.slice(0, 8)}</p>
+                          <p className="text-xs text-slate-400">{formatDimension(asset)}</p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => updateThumbnailMutation.mutate(asset.id)}
+                          disabled={updateThumbnailMutation.isPending}
+                          className="rounded-2xl border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-[11px] text-amber-200 transition hover:bg-amber-400/20 disabled:opacity-60"
+                        >
+                          Use for thumbnail
+                        </button>
+                      </div>
                       <div className="flex flex-wrap gap-2 text-[11px] text-slate-300">
                         {asset.faces.slice(0, 4).map((face) => (
                           <span key={face.id} className="rounded-full border border-white/10 px-2.5 py-1">
@@ -287,7 +310,11 @@ export function PersonDetailPage({ personId }: { personId: string }) {
         </div>
       </AppShell>
 
-      <AssetDetailModal assetId={selectedAssetId} onClose={() => setSelectedAssetId(null)} />
+      <AssetDetailModal
+        assetId={selectedAssetId}
+        onClose={() => setSelectedAssetId(null)}
+        thumbnailPersonId={personId}
+      />
     </>
   );
 }

@@ -58,8 +58,9 @@ export type Person = {
   id: string;
   name: string | null;
   thumbnail_face_id: string | null;
-  thumbnail_crop_path: string | null;
-  thumbnail_crop_url: string | null;
+  thumbnail_path: string | null;
+  thumbnail_url: string | null;
+  thumbnail_manually_set: boolean;
   face_count: number;
   asset_count: number;
   is_hidden: boolean;

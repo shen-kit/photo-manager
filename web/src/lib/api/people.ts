@@ -48,6 +48,14 @@ export function updatePerson(personId: string, payload: PersonUpdatePayload) {
   });
 }
 
+export function updatePersonThumbnail(personId: string, assetId: string) {
+  return apiRequest<Person>(`/api/v1/people/${personId}/thumbnail`, {
+    method: "PATCH",
+    body: JSON.stringify({ asset_id: assetId }),
+    auth: true,
+  });
+}
+
 export function getPersonAssets(personId: string, page = 1, pageSize = 24) {
   const search = new URLSearchParams({
     page: String(page),

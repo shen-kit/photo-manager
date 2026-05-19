@@ -241,9 +241,9 @@ export function PeoplePage() {
                   >
                     <Link href={`/people/${person.id}`} className="block">
                       <div className="relative aspect-[4/3] overflow-hidden bg-black/30">
-                        {person.thumbnail_crop_url ? (
+                        {person.thumbnail_url ? (
                           <img
-                            src={person.thumbnail_crop_url}
+                            src={person.thumbnail_url}
                             alt={person.name ?? "Unnamed person"}
                             className="h-full w-full object-cover"
                           />
