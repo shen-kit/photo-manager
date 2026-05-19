@@ -1,6 +1,6 @@
 """add face recognition registry defaults and face schema fields
 
-Revision ID: 0005_face_recognition_registry_and_faces_schema
+Revision ID: 0005_face_registry_schema
 Revises: 0004_ai_model_registry_defaults
 Create Date: 2026-05-19 00:00:00.000000
 """
@@ -11,7 +11,7 @@ from alembic import op
 import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
-revision = "0005_face_recognition_registry_and_faces_schema"
+revision = "0005_face_registry_schema"
 down_revision = "0004_ai_model_registry_defaults"
 branch_labels = None
 depends_on = None

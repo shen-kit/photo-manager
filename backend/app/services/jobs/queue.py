@@ -15,6 +15,8 @@ GENERATE_ASSET_CLIP_EMBEDDING_JOB_NAME = "generate_asset_clip_embedding"
 GENERATE_MISSING_ASSET_CLIP_EMBEDDINGS_JOB_NAME = (
     "generate_missing_asset_clip_embeddings"
 )
+PROCESS_ASSET_FACES_JOB_NAME = "process_asset_faces"
+GENERATE_MISSING_ASSET_FACES_JOB_NAME = "generate_missing_asset_faces"
 
 
 async def enqueue_worker_job(job_name: str, *args: object) -> bool:
@@ -65,6 +67,30 @@ async def enqueue_missing_asset_embeddings_job(
 ) -> bool:
     return await enqueue_worker_job(
         GENERATE_MISSING_ASSET_CLIP_EMBEDDINGS_JOB_NAME,
+        str(job_id),
+        force,
+    )
+
+
+async def enqueue_asset_faces_job(
+    asset_id: UUID,
+    *,
+    force: bool = False,
+    job_id: UUID | None = None,
+) -> bool:
+    args: list[object] = [str(asset_id), force]
+    if job_id is not None:
+        args.append(str(job_id))
+    return await enqueue_worker_job(PROCESS_ASSET_FACES_JOB_NAME, *args)
+
+
+async def enqueue_missing_asset_faces_job(
+    job_id: UUID,
+    *,
+    force: bool = False,
+) -> bool:
+    return await enqueue_worker_job(
+        GENERATE_MISSING_ASSET_FACES_JOB_NAME,
         str(job_id),
         force,
     )

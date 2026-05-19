@@ -9,7 +9,9 @@ from app.core.logging import setup_logging
 from .tasks import (
     generate_asset_clip_embedding,
     generate_missing_asset_clip_embeddings,
+    generate_missing_asset_faces,
     process_asset_metadata,
+    process_asset_faces,
     scan_originals_library,
 )
 
@@ -20,6 +22,8 @@ class WorkerSettings:
         scan_originals_library,
         generate_asset_clip_embedding,
         generate_missing_asset_clip_embeddings,
+        process_asset_faces,
+        generate_missing_asset_faces,
     ]
     redis_settings = RedisSettings.from_dsn(
         os.getenv("REDIS_URL", "redis://redis:6379/0")

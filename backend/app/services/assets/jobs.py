@@ -11,6 +11,7 @@ from sqlmodel import Session
 from app.core.database import engine
 from app.models import Asset
 from app.services.jobs.queue import enqueue_asset_embedding_job
+from app.services.jobs.queue import enqueue_asset_faces_job
 from app.services.jobs.queue import enqueue_asset_processing_job
 from app.services.jobs.service import JobService
 from app.services.notifications.service import NotificationService
@@ -21,6 +22,7 @@ from app.services.assets.media import (
     VIDEO_PREVIEW_STATUS_READY,
     build_fast_variants,
     inspect_video,
+    is_supported_image_mime_type,
     is_supported_video_mime_type,
     master_path_to_source_path,
     processed_asset_dir,
@@ -289,3 +291,18 @@ async def process_asset_metadata(
                 related_asset_id=asset.id,
                 details={"asset_id": str(asset.id)},
             )
+        if is_supported_image_mime_type(asset.mime_type):
+            queued_face_job = await enqueue_asset_faces_job(asset.id)
+            if not queued_face_job:
+                logger.warning(
+                    "Failed to enqueue face processing job for asset %s", asset.id
+                )
+                notification_service.create_notification(
+                    level=NotificationLevel.WARNING,
+                    category=NotificationCategory.FACE,
+                    title="Face processing job failed to queue",
+                    message="The asset metadata was processed, but face processing was not queued.",
+                    related_job_id=related_job_id,
+                    related_asset_id=asset.id,
+                    details={"asset_id": str(asset.id)},
+                )
