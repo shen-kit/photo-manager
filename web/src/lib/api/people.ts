@@ -1,7 +1,7 @@
 import { apiRequest } from "@/lib/api/client";
+import { runManualJob } from "@/lib/api/jobs";
 import type {
   AssetListResponse,
-  Job,
   Person,
   PersonListParams,
   PersonMergeResponse,
@@ -13,11 +13,9 @@ export function triggerPeopleClustering(payload: {
   top_k?: number;
   min_cluster_size?: number;
 }) {
-  return apiRequest<Job>("/api/v1/people/cluster", {
-    method: "POST",
-    body: JSON.stringify(payload),
-    auth: true,
-  });
+  return runManualJob("cluster_faces", {
+    params: payload,
+  }).then((response) => response.job);
 }
 
 export function listPeople(params: PersonListParams = {}) {

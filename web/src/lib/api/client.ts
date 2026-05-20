@@ -9,6 +9,23 @@ type RequestOptions = {
   contentType?: string | null;
 };
 
+type ApiErrorPayload = {
+  detail?: unknown;
+  [key: string]: unknown;
+};
+
+export class ApiError extends Error {
+  status: number;
+  payload: ApiErrorPayload | null;
+
+  constructor(message: string, status: number, payload: ApiErrorPayload | null) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.payload = payload;
+  }
+}
+
 let refreshPromise: Promise<string | null> | null = null;
 
 function buildHeaders(options: RequestOptions) {
@@ -56,6 +73,30 @@ async function refreshAccessToken() {
   return refreshPromise;
 }
 
+function getErrorMessage(payload: unknown) {
+  if (typeof payload === "string") {
+    return payload;
+  }
+
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+
+  const objectPayload = payload as Record<string, unknown>;
+  if (typeof objectPayload.detail === "string") {
+    return objectPayload.detail;
+  }
+
+  if (objectPayload.detail && typeof objectPayload.detail === "object") {
+    const nestedDetail = objectPayload.detail as Record<string, unknown>;
+    if (typeof nestedDetail.detail === "string") {
+      return nestedDetail.detail;
+    }
+  }
+
+  return null;
+}
+
 export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const execute = async () =>
     fetch(path, {
@@ -76,15 +117,17 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
 
   if (!response.ok) {
     let detail = "Request failed";
+    let payload: ApiErrorPayload | null = null;
     try {
-      const payload = (await response.json()) as { detail?: string };
-      if (payload.detail) {
-        detail = payload.detail;
+      payload = (await response.json()) as ApiErrorPayload;
+      const parsedDetail = getErrorMessage(payload);
+      if (parsedDetail) {
+        detail = parsedDetail;
       }
     } catch {
       detail = response.statusText || detail;
     }
-    throw new Error(detail);
+    throw new ApiError(detail, response.status, payload);
   }
 
   if (response.status === 204) {

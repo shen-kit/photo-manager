@@ -7,9 +7,13 @@ import Link from "next/link";
 import { AppShell } from "@/components/app-shell";
 import { JobStatusBadge } from "@/components/job-status-badge";
 import { LoginScreen } from "@/components/login-screen";
+import { ManualJobsLauncher } from "@/components/manual-jobs-launcher";
 import { getJobs } from "@/lib/api/jobs";
 import { formatDateTime } from "@/lib/format";
+import type { JobStatus } from "@/lib/types";
 import { useSessionBootstrap } from "@/lib/use-session-bootstrap";
+
+const ACTIVE_JOB_STATUSES = new Set<JobStatus>(["queued", "running"]);
 
 function formatProgress(current: number, total: number | null) {
   if (total == null) {
@@ -26,6 +30,10 @@ export function JobsPage() {
     queryKey: ["jobs"],
     queryFn: getJobs,
     enabled: accessReady,
+    refetchInterval: (query) => {
+      const jobs = query.state.data ?? [];
+      return jobs.some((job) => ACTIVE_JOB_STATUSES.has(job.status)) ? 3000 : false;
+    },
   });
 
   if (isBootstrapping) {
@@ -59,6 +67,8 @@ export function JobsPage() {
       title="Jobs"
       description="Inspect queued, running, completed, and failed background work."
     >
+      <ManualJobsLauncher accessReady={accessReady} jobs={jobs} />
+
       <section className="rounded-[28px] border border-white/10 bg-black/25 p-5 shadow-panel backdrop-blur">
         <div className="mb-5 flex items-end justify-between border-b border-white/10 pb-4">
           <div>

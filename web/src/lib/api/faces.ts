@@ -1,13 +1,14 @@
 import { apiRequest } from "@/lib/api/client";
+import { runManualJob } from "@/lib/api/jobs";
 import type { AssetFace, Job } from "@/lib/types";
 
 export function triggerFaceBackfill(force = false) {
-  const search = new URLSearchParams({ force: String(force) });
-  return apiRequest<Job>(`/api/v1/faces/backfill?${search.toString()}`, {
-    method: "POST",
-    auth: true,
-    contentType: null,
-  });
+  return runManualJob("run_missing_or_outdated_face_recognition", {
+    params: {
+      force,
+      auto_match: false,
+    },
+  }).then((response) => response.job);
 }
 
 export function triggerAssetFaceProcessing(assetId: string, force = false) {

@@ -1,9 +1,9 @@
 import { apiRequest } from "@/lib/api/client";
+import { runManualJob } from "@/lib/api/jobs";
 import type {
   AssetDetail,
   AssetIngestResponse,
   AssetListResponse,
-  Job,
   AssetUpdatePayload,
 } from "@/lib/types";
 
@@ -44,11 +44,7 @@ export function ingestPath(filePath: string) {
 }
 
 export function scanAssets() {
-  return apiRequest<Job>("/api/v1/assets/scan", {
-    method: "POST",
-    auth: true,
-    contentType: null,
-  });
+  return runManualJob("bulk_scan").then((response) => response.job);
 }
 
 export function updateAsset(assetId: string, payload: AssetUpdatePayload) {

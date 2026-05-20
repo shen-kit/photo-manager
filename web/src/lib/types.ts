@@ -152,6 +152,7 @@ export type AssetIngestResponse = {
 export type Job = {
   id: string;
   type: string;
+  job_key: string | null;
   status: JobStatus;
   progress_current: number;
   progress_total: number | null;
@@ -159,9 +160,55 @@ export type Job = {
   parameters: Record<string, unknown> | null;
   result: Record<string, unknown> | null;
   error_message: string | null;
+  parent_job_id: string | null;
+  related_asset_id: string | null;
+  is_visible: boolean;
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
+};
+
+export type ManualJobMode = "global" | "batched";
+
+export type ManualJobParameter = {
+  name: string;
+  type: "boolean" | "integer" | "number";
+  required: boolean;
+  default: unknown;
+  description: string | null;
+  minimum: number | null;
+  maximum: number | null;
+  step: number | null;
+};
+
+export type ManualJobDefinition = {
+  job_key: string;
+  title: string;
+  description: string;
+  category: string;
+  mode: ManualJobMode;
+  supports_dry_run: boolean;
+  batch_size: number | null;
+  pending_count: number | null;
+  active_job_id: string | null;
+  active_status: JobStatus | null;
+  last_job_id: string | null;
+  last_status: JobStatus | null;
+  last_finished_at: string | null;
+  parameters: ManualJobParameter[];
+  default_params: Record<string, unknown>;
+};
+
+export type ManualJobCatalog = {
+  items: ManualJobDefinition[];
+};
+
+export type ManualJobRunPayload = {
+  params?: Record<string, unknown>;
+};
+
+export type ManualJobRunResponse = {
+  job: Job;
 };
 
 export type Notification = {

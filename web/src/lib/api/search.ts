@@ -1,5 +1,6 @@
 import { apiRequest } from "@/lib/api/client";
-import type { Job, SearchResponse } from "@/lib/types";
+import { runManualJob } from "@/lib/api/jobs";
+import type { SearchResponse } from "@/lib/types";
 
 export function searchAssets(query: string, limit = 24, offset = 0, personIds: string[] = []) {
   const search = new URLSearchParams({
@@ -18,10 +19,7 @@ export function searchAssets(query: string, limit = 24, offset = 0, personIds: s
 }
 
 export function triggerClipBackfill(force = false) {
-  const search = new URLSearchParams({ force: String(force) });
-  return apiRequest<Job>(`/api/v1/search/backfill?${search.toString()}`, {
-    method: "POST",
-    auth: true,
-    contentType: null,
-  });
+  return runManualJob("run_missing_or_outdated_clip_embeddings", {
+    params: { force },
+  }).then((response) => response.job);
 }
