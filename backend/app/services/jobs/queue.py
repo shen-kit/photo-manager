@@ -34,15 +34,18 @@ async def enqueue_worker_job(job_name: str, *args: object) -> bool:
 
 
 async def enqueue_asset_processing_job(
-    asset_id: UUID, job_id: UUID | None = None
+    asset_id: UUID,
+    job_id: UUID | None = None,
+    *,
+    enqueue_embedding: bool = True,
+    enqueue_faces: bool = True,
 ) -> bool:
+    args: list[object] = [str(asset_id)]
     if job_id is None:
-        return await enqueue_worker_job(PROCESS_ASSET_METADATA_JOB_NAME, str(asset_id))
-    return await enqueue_worker_job(
-        PROCESS_ASSET_METADATA_JOB_NAME,
-        str(asset_id),
-        str(job_id),
-    )
+        args.extend([None, enqueue_embedding, enqueue_faces])
+    else:
+        args.extend([str(job_id), enqueue_embedding, enqueue_faces])
+    return await enqueue_worker_job(PROCESS_ASSET_METADATA_JOB_NAME, *args)
 
 
 async def enqueue_scan_job(job_id: UUID) -> bool:

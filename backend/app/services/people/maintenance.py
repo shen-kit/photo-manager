@@ -77,3 +77,11 @@ class PeopleMaintenanceService:
             deleted_person_ids=deleted_person_ids,
             retained_person_ids=retained_person_ids,
         )
+
+    def reconcile_after_asset_restore(
+        self,
+        *,
+        asset_id: UUID,
+    ) -> PeopleMaintenanceResult:
+        person_ids = self.repository.list_person_ids_for_asset(asset_id=asset_id)
+        return self.reconcile_people(person_ids=person_ids)

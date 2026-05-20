@@ -18,6 +18,7 @@ from sqlmodel import Session, select
 from app.core.database import engine, get_session
 from app.models import Asset, AssetTag, Face, Person, Tag
 from app.services.assets.hashing import compute_sha256
+from app.services.assets.repository import AssetRepository, active_asset_where
 from app.services.assets.media import (
     MEDIA_ORIGINALS_DIR,
     MEDIA_ORIGINALS_TMP_DIR,
@@ -64,10 +65,6 @@ class AssetScanEnqueueResult:
     job_id: UUID
 
 
-def active_asset_where():
-    return Asset.deleted_at.is_(None)
-
-
 def _generate_fast_artifacts(
     asset_id: UUID, original_path: Path, include_small: bool
 ) -> None:
@@ -95,6 +92,7 @@ class AssetService:
     ) -> None:
         self.session = session
         self.background_tasks = background_tasks
+        self.repository = AssetRepository(session)
 
     def _create_asset_warning(
         self,
@@ -469,9 +467,7 @@ class AssetService:
         return AssetProcessResult(asset=asset, queued_job=queued_job, created_new=True)
 
     def _get_active_asset_or_404(self, asset_id: UUID) -> Asset:
-        asset = self.session.exec(
-            select(Asset).where(Asset.id == asset_id, active_asset_where())
-        ).first()
+        asset = self.repository.get_active_asset(asset_id)
         if asset is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Asset not found"

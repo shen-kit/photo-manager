@@ -20,9 +20,19 @@ from app.services.assets.scan import (
 
 
 async def process_asset_metadata(
-    ctx: dict[str, object], asset_id: str, job_id: str | None = None
+    ctx: dict[str, object],
+    asset_id: str,
+    job_id: str | None = None,
+    enqueue_embedding: bool = True,
+    enqueue_faces: bool = True,
 ) -> None:
-    await process_asset_metadata_job(ctx, asset_id, job_id)
+    await process_asset_metadata_job(
+        ctx,
+        asset_id,
+        job_id,
+        enqueue_embedding,
+        enqueue_faces,
+    )
 
 
 async def scan_originals_library(ctx: dict[str, object], job_id: str) -> dict[str, int]:

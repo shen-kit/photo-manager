@@ -121,7 +121,11 @@ def _update_parent_job_message(
 
 
 async def process_asset_metadata(
-    _: dict[str, object], asset_id: str, job_id: str | None = None
+    _: dict[str, object],
+    asset_id: str,
+    job_id: str | None = None,
+    enqueue_embedding: bool = True,
+    enqueue_faces: bool = True,
 ) -> None:
     related_job_id = UUID(job_id) if job_id else None
     with Session(engine) as session:
@@ -277,21 +281,22 @@ async def process_asset_metadata(
 
         session.add(asset)
         session.commit()
-        queued_embedding_job = await enqueue_asset_embedding_job(asset.id)
-        if not queued_embedding_job:
-            logger.warning(
-                "Failed to enqueue CLIP embedding job for asset %s", asset.id
-            )
-            notification_service.create_notification(
-                level=NotificationLevel.WARNING,
-                category=NotificationCategory.SEARCH,
-                title="Embedding job failed to queue",
-                message="The asset metadata was processed, but semantic embedding generation was not queued.",
-                related_job_id=related_job_id,
-                related_asset_id=asset.id,
-                details={"asset_id": str(asset.id)},
-            )
-        if is_supported_image_mime_type(asset.mime_type):
+        if enqueue_embedding:
+            queued_embedding_job = await enqueue_asset_embedding_job(asset.id)
+            if not queued_embedding_job:
+                logger.warning(
+                    "Failed to enqueue CLIP embedding job for asset %s", asset.id
+                )
+                notification_service.create_notification(
+                    level=NotificationLevel.WARNING,
+                    category=NotificationCategory.SEARCH,
+                    title="Embedding job failed to queue",
+                    message="The asset metadata was processed, but semantic embedding generation was not queued.",
+                    related_job_id=related_job_id,
+                    related_asset_id=asset.id,
+                    details={"asset_id": str(asset.id)},
+                )
+        if enqueue_faces and is_supported_image_mime_type(asset.mime_type):
             queued_face_job = await enqueue_asset_faces_job(asset.id)
             if not queued_face_job:
                 logger.warning(
