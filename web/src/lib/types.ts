@@ -206,3 +206,90 @@ export type SearchResponse = {
   offset: number;
   total: number;
 };
+
+export type TrashSort =
+  | "deleted_at_desc"
+  | "deleted_at_asc"
+  | "taken_at_desc"
+  | "taken_at_asc";
+
+export type TrashAssetListItem = {
+  id: string;
+  deleted_at: string;
+  captured_at: string | null;
+  description: string | null;
+  is_favorite: boolean;
+  width: number | null;
+  height: number | null;
+  has_large_preview: boolean;
+  small_thumbnail_url: string;
+  blurhash: string | null;
+  tags: AssetTag[];
+  faces: FaceSummary[];
+};
+
+export type TrashAssetListResponse = {
+  items: TrashAssetListItem[];
+  page: number;
+  page_size: number;
+  total: number;
+};
+
+export type TrashAssetDetail = {
+  id: string;
+  file_hash: string;
+  master_path: string;
+  mime_type: string;
+  deleted_at: string;
+  captured_at: string | null;
+  captured_at_local: string | null;
+  description: string | null;
+  is_favorite: boolean;
+  width: number | null;
+  height: number | null;
+  has_large_preview: boolean;
+  file_size_bytes: number | null;
+  video_codec: string | null;
+  audio_codec: string | null;
+  duration_seconds: number | null;
+  preview_status: string | null;
+  blurhash: string | null;
+  exif_data: Record<string, unknown> | null;
+  tags: AssetTag[];
+  people: PersonSummary[];
+  faces: FaceSummary[];
+  large_preview_url: string;
+  created_at: string;
+};
+
+export type RestoredAssetDetail = Omit<TrashAssetDetail, "deleted_at">;
+
+export type TrashRestoreJobSummary = {
+  queued_metadata_job: boolean;
+  queued_embedding_job: boolean;
+  queued_face_job: boolean;
+  ran_face_matching: boolean;
+  matched_faces: number;
+};
+
+export type TrashRestoreResponse = {
+  asset: RestoredAssetDetail;
+  jobs: TrashRestoreJobSummary;
+};
+
+export type TrashBulkRestorePayload = {
+  asset_ids: string[];
+};
+
+export type TrashRestoreFailure = {
+  asset_id: string;
+  detail: string;
+};
+
+export type TrashBulkRestoreResponse = {
+  requested: number;
+  restored: number;
+  failed: number;
+  items: TrashRestoreResponse[];
+  failures: TrashRestoreFailure[];
+};
