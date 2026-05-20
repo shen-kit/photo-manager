@@ -39,11 +39,18 @@ class PeopleClusteringRequest(SQLModel):
     min_cluster_size: int = CLUSTER_MIN_SIZE
 
 
-def _person_thumbnail_url(request: Request, thumbnail_path: str | None) -> str | None:
+def build_person_thumbnail_url(
+    request: Request,
+    thumbnail_path: str | None,
+    thumbnail_face_id: UUID | None,
+) -> str | None:
     if not thumbnail_path:
         return None
     normalized = Path(thumbnail_path).as_posix().lstrip("/")
-    return str(request.base_url).rstrip("/") + f"/media/processed/{normalized}"
+    url = str(request.base_url).rstrip("/") + f"/media/processed/{normalized}"
+    if thumbnail_face_id is None:
+        return url
+    return f"{url}?face_id={thumbnail_face_id}"
 
 
 def _thumbnail_url(request: Request, asset_id: UUID, variant: str = "small") -> str:
@@ -79,7 +86,11 @@ def _build_person_read(request: Request, row) -> PersonRead:
         name=row.person.name,
         thumbnail_face_id=row.person.thumbnail_face_id,
         thumbnail_path=row.person.thumbnail_path,
-        thumbnail_url=_person_thumbnail_url(request, row.person.thumbnail_path),
+        thumbnail_url=build_person_thumbnail_url(
+            request,
+            row.person.thumbnail_path,
+            row.person.thumbnail_face_id,
+        ),
         thumbnail_manually_set=row.person.thumbnail_manually_set,
         face_count=row.face_count,
         asset_count=row.asset_count,
