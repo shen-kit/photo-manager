@@ -16,33 +16,10 @@ from app.services.face_assignment.service import (
     FaceAssignmentServiceError,
 )
 from app.services.faces.service import FaceProcessingService, FaceProcessingServiceError
-from app.services.jobs.service import JobService
-from app.services.manual_jobs.service import ManualJobService
-from app.services.notifications.service import NotificationService
+from app.services.jobs.context import JobNotification, JobTaskContext
 from app.services.notifications.types import NotificationCategory, NotificationLevel
 
 logger = logging.getLogger(__name__)
-
-
-def _mark_job_failed(
-    *,
-    session: Session,
-    job_id: UUID | None,
-    message: str,
-    asset_id: UUID | None = None,
-    details: dict[str, str] | None = None,
-) -> None:
-    NotificationService(session).create_notification(
-        level=NotificationLevel.ERROR,
-        category=NotificationCategory.FACE,
-        title="Face processing failed",
-        message=message,
-        details=details,
-        related_job_id=job_id,
-        related_asset_id=asset_id,
-    )
-    if job_id is not None:
-        JobService(session).fail_job(job_id, message)
 
 
 async def process_asset_faces(
@@ -55,12 +32,10 @@ async def process_asset_faces(
     job_uuid = UUID(job_id) if job_id else None
     asset_uuid = UUID(asset_id)
     with Session(engine) as session:
-        job_service = JobService(session)
-        manual_job_service = ManualJobService(session)
+        job_context = JobTaskContext(session, job_id=job_uuid)
         tracker = AIProcessingTrackerService(session)
         face_service = FaceProcessingService(session)
-        if job_uuid is not None:
-            job_service.mark_running(job_uuid, message="Processing asset faces")
+        job_context.mark_running("Processing asset faces")
         try:
             face_model = face_service.ai_model_repository.get_default_model_for_task(
                 AI_MODEL_TASK_FACE_RECOGNITION
@@ -86,12 +61,16 @@ async def process_asset_faces(
                 ).assign_faces_for_asset(asset_uuid)
         except (FaceProcessingServiceError, FaceAssignmentServiceError) as exc:
             logger.warning("Face processing failed for asset %s: %s", asset_uuid, exc)
-            _mark_job_failed(
-                session=session,
-                job_id=job_uuid,
-                message=str(exc),
-                asset_id=asset_uuid,
-                details={"asset_id": asset_id},
+            job_context.fail(
+                str(exc),
+                notification=JobNotification(
+                    level=NotificationLevel.ERROR,
+                    category=NotificationCategory.FACE,
+                    title="Face processing failed",
+                    message=str(exc),
+                    details={"asset_id": asset_id},
+                    related_asset_id=asset_uuid,
+                ),
             )
             if face_model is not None:
                 tracker.mark_failed(
@@ -101,8 +80,6 @@ async def process_asset_faces(
                     job_id=job_uuid,
                     error_message=str(exc),
                 )
-            if job_uuid is not None:
-                manual_job_service.on_child_job_terminal(job_uuid)
             return
         tracker.mark_completed(
             asset_id=asset_uuid,
@@ -111,34 +88,31 @@ async def process_asset_faces(
             job_id=job_uuid,
             output_count=result.detected_faces,
         )
-        if job_uuid is not None:
-            job_service.complete_job(
-                job_uuid,
-                result={
-                    "asset_id": asset_id,
-                    "model_id": result.model_id,
-                    "processed": result.processed,
-                    "skipped": result.skipped,
-                    "auto_match": auto_match,
-                    "faces_created": result.faces_created,
-                    "detected_faces": result.detected_faces,
-                    "deleted_unconfirmed_faces": result.deleted_unconfirmed_faces,
-                    "faces_seen_for_matching": (
-                        assignment_result.faces_seen
-                        if assignment_result is not None
-                        else 0
-                    ),
-                    "faces_matched": (
-                        assignment_result.faces_matched
-                        if assignment_result is not None
-                        else 0
-                    ),
-                    "faces_unmatched": (
-                        assignment_result.faces_unmatched
-                        if assignment_result is not None
-                        else 0
-                    ),
-                },
-                message="Asset faces processed",
-            )
-            manual_job_service.on_child_job_terminal(job_uuid)
+        job_context.complete(
+            "Asset faces processed",
+            result={
+                "asset_id": asset_id,
+                "model_id": result.model_id,
+                "processed": result.processed,
+                "skipped": result.skipped,
+                "auto_match": auto_match,
+                "faces_created": result.faces_created,
+                "detected_faces": result.detected_faces,
+                "deleted_unconfirmed_faces": result.deleted_unconfirmed_faces,
+                "faces_seen_for_matching": (
+                    assignment_result.faces_seen
+                    if assignment_result is not None
+                    else 0
+                ),
+                "faces_matched": (
+                    assignment_result.faces_matched
+                    if assignment_result is not None
+                    else 0
+                ),
+                "faces_unmatched": (
+                    assignment_result.faces_unmatched
+                    if assignment_result is not None
+                    else 0
+                ),
+            },
+        )

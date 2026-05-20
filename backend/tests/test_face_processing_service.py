@@ -81,6 +81,16 @@ class _FakeAIProcessingRepository:
         return []
 
 
+class _FakeFaceDetectionProvider:
+    def __init__(self, faces: list[DetectedFace]) -> None:
+        self.faces = faces
+        self.calls: list[Path] = []
+
+    def detect_faces(self, image_path: Path) -> list[DetectedFace]:
+        self.calls.append(image_path)
+        return list(self.faces)
+
+
 class FaceProcessingServiceTest(unittest.TestCase):
     def _asset(self, path: Path, *, mime_type: str = "image/jpeg") -> Asset:
         return Asset(
@@ -288,6 +298,34 @@ class FaceProcessingServiceTest(unittest.TestCase):
         self.assertFalse(result.processed)
         self.assertEqual(result.detected_faces, 0)
         self.assertEqual(detector_calls, [])
+
+    def test_process_accepts_provider_object(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            image_path = Path(tmp_dir) / "photo.jpg"
+            image_path.write_bytes(b"stub")
+            asset = self._asset(image_path)
+            repo = _FakeFaceRepository(asset=asset)
+            provider = _FakeFaceDetectionProvider([self._face(9, 10)])
+            service = FaceProcessingService(
+                session=None,
+                repository=repo,
+                ai_processing_repository=_FakeAIProcessingRepository(),
+                ai_model_repository=_FakeAIModelRepository(self._model()),
+                detector=provider,
+            )
+
+            from unittest.mock import patch
+
+            with patch(
+                "app.services.faces.service.master_path_to_source_path",
+                return_value=image_path,
+            ):
+                result = service.process_asset_faces(asset.id, force=False)
+
+        self.assertTrue(result.processed)
+        self.assertEqual(provider.calls, [image_path])
+        self.assertEqual(len(repo.inserted_faces), 1)
+        self.assertEqual(repo.inserted_faces[0].bounding_box["x"], 9)
 
 
 if __name__ == "__main__":

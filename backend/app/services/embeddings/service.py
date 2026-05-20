@@ -20,10 +20,10 @@ from app.services.assets.media import (
     master_path_to_source_path,
     processed_asset_dir,
 )
-from app.services.embeddings.clip_model import (
-    ClipEmbeddingError,
-    embed_image,
-    embed_text,
+from app.services.embeddings.clip_model import ClipEmbeddingError
+from app.services.embeddings.provider import (
+    EmbeddingProvider,
+    OpenClipEmbeddingProvider,
 )
 from app.services.embeddings.repository import EmbeddingRepository
 
@@ -49,14 +49,18 @@ class EmbeddingService:
         self,
         session: Session,
         *,
+        repository: EmbeddingRepository | None = None,
         ai_processing_repository: AIProcessingRepository | None = None,
+        ai_model_repository: AIModelRepository | None = None,
+        provider: EmbeddingProvider | None = None,
     ) -> None:
         self.session = session
-        self.repository = EmbeddingRepository(session)
+        self.repository = repository or EmbeddingRepository(session)
         self.ai_processing_repository = (
             ai_processing_repository or AIProcessingRepository(session)
         )
-        self.ai_model_repository = AIModelRepository(session)
+        self.ai_model_repository = ai_model_repository or AIModelRepository(session)
+        self.provider = provider or OpenClipEmbeddingProvider()
 
     def generate_for_asset(
         self,
@@ -85,7 +89,7 @@ class EmbeddingService:
 
         source_path = self._resolve_embedding_source(asset)
         try:
-            embedding = embed_image(
+            embedding = self.provider.embed_image(
                 source_path,
                 model_name=clip_model.model_name,
                 pretrained=clip_model.version_tag,
@@ -117,7 +121,7 @@ class EmbeddingService:
         except AIModelConfigurationError as exc:
             raise EmbeddingServiceError(str(exc)) from exc
         try:
-            embedding = embed_text(
+            embedding = self.provider.embed_text(
                 normalized,
                 model_name=clip_model.model_name,
                 pretrained=clip_model.version_tag,

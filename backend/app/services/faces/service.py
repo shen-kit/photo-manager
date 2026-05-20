@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from collections.abc import Callable
 from uuid import UUID
 
 from sqlmodel import Session
@@ -19,10 +19,13 @@ from app.services.assets.media import (
     is_supported_image_mime_type,
     master_path_to_source_path,
 )
+from app.services.face_detection.provider import (
+    FaceDetectionProvider,
+    resolve_face_detection_provider,
+)
 from app.services.face_detection.service import (
     DetectedFace,
     FaceDetectionError,
-    detect_faces,
 )
 from app.services.faces.repository import FaceRepository
 from app.services.people.maintenance import PeopleMaintenanceService
@@ -58,7 +61,9 @@ class FaceProcessingService:
         repository: FaceRepository | None = None,
         ai_processing_repository: AIProcessingRepository | None = None,
         ai_model_repository: AIModelRepository | None = None,
-        detector: Callable[[Path], list[DetectedFace]] = detect_faces,
+        detector: FaceDetectionProvider
+        | Callable[[Path], list[DetectedFace]]
+        | None = None,
     ) -> None:
         self.session = session
         self.repository = repository or FaceRepository(session)
@@ -66,7 +71,7 @@ class FaceProcessingService:
             ai_processing_repository or AIProcessingRepository(session)
         )
         self.ai_model_repository = ai_model_repository or AIModelRepository(session)
-        self.detector = detector
+        self.detector = resolve_face_detection_provider(detector)
 
     def process_asset_faces(
         self,
@@ -146,7 +151,7 @@ class FaceProcessingService:
 
         source_path = self._resolve_source_path(asset)
         try:
-            detected_faces = self.detector(source_path)
+            detected_faces = self.detector.detect_faces(source_path)
         except FaceDetectionError as exc:
             raise FaceProcessingServiceError(str(exc)) from exc
 

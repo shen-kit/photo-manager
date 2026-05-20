@@ -6,8 +6,7 @@ from uuid import UUID
 from sqlmodel import Session
 
 from app.core.database import engine
-from app.services.jobs.service import JobService
-from app.services.notifications.service import NotificationService
+from app.services.jobs.context import JobNotification, JobTaskContext
 from app.services.notifications.types import NotificationCategory, NotificationLevel
 from app.services.people_clustering.service import (
     CLUSTER_DISTANCE_THRESHOLD,
@@ -29,22 +28,22 @@ async def cluster_faces(
 ) -> dict[str, int]:
     job_uuid = UUID(job_id)
     with Session(engine) as session:
-        job_service = JobService(session)
-        notification_service = NotificationService(session)
+        job_context = JobTaskContext(session, job_id=job_uuid)
         clustering_service = PeopleClusteringService(session)
 
-        job_service.mark_running(job_uuid, message="Clustering unassigned faces")
-        notification_service.create_notification(
-            level=NotificationLevel.INFO,
-            category=NotificationCategory.FACE,
-            title="Face clustering started",
-            message="Clustering eligible unassigned faces into people.",
-            related_job_id=job_uuid,
-            details={
-                "threshold": str(threshold),
-                "top_k": str(top_k),
-                "min_cluster_size": str(min_cluster_size),
-            },
+        job_context.mark_running("Clustering unassigned faces")
+        job_context.notify(
+            JobNotification(
+                level=NotificationLevel.INFO,
+                category=NotificationCategory.FACE,
+                title="Face clustering started",
+                message="Clustering eligible unassigned faces into people.",
+                details={
+                    "threshold": str(threshold),
+                    "top_k": str(top_k),
+                    "min_cluster_size": str(min_cluster_size),
+                },
+            )
         )
 
         try:
@@ -55,14 +54,15 @@ async def cluster_faces(
             )
         except PeopleClusteringServiceError as exc:
             logger.warning("Face clustering failed: %s", exc)
-            notification_service.create_notification(
-                level=NotificationLevel.ERROR,
-                category=NotificationCategory.FACE,
-                title="Face clustering failed",
-                message=str(exc),
-                related_job_id=job_uuid,
+            job_context.fail(
+                str(exc),
+                notification=JobNotification(
+                    level=NotificationLevel.ERROR,
+                    category=NotificationCategory.FACE,
+                    title="Face clustering failed",
+                    message=str(exc),
+                ),
             )
-            job_service.fail_job(job_uuid, str(exc))
             raise
 
         result = {
@@ -71,17 +71,21 @@ async def cluster_faces(
             "faces_assigned": summary.faces_assigned,
             "skipped_small_clusters": summary.skipped_small_clusters,
         }
-        job_service.complete_job(
-            job_uuid,
+        job_context.complete(
+            "Face clustering completed",
             result=result,
-            message="Face clustering completed",
+            notification=JobNotification(
+                level=NotificationLevel.SUCCESS,
+                category=NotificationCategory.FACE,
+                title="Face clustering completed",
+                message="Face clustering completed successfully.",
+                details={
+                    "threshold": str(threshold),
+                    "top_k": str(top_k),
+                    "min_cluster_size": str(min_cluster_size),
+                    **{key: str(value) for key, value in result.items()},
+                },
+            ),
         )
-        notification_service.create_notification(
-            level=NotificationLevel.SUCCESS,
-            category=NotificationCategory.FACE,
-            title="Face clustering completed",
-            message="Face clustering completed successfully.",
-            related_job_id=job_uuid,
-            details={key: str(value) for key, value in result.items()},
-        )
+
         return result

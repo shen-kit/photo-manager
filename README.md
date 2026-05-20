@@ -128,10 +128,17 @@ flowchart LR
 
 - Routes live under `backend/app/api/v1/features/`.
 - Domain logic lives under `backend/app/services/`.
+- Manual maintenance jobs use handler classes under `backend/app/services/manual_jobs/`.
 - Repositories are used for persistence-heavy operations such as:
   - active vs deleted asset access
   - people and face queries
   - vector nearest-neighbour queries
+- Background worker entrypoints stay thin:
+  - `backend/worker/tasks.py` delegates to service-level task functions
+  - shared task/job lifecycle helpers live under `backend/app/services/jobs/`
+- Model-runtime boundaries are explicit where they are likely to vary:
+  - `backend/app/services/embeddings/provider.py` defines the embedding provider seam
+  - `backend/app/services/face_detection/provider.py` defines the face-detection provider seam
 - SQLModel table models are centralized in `backend/app/models.py`.
 - Worker task registration lives in `backend/worker/`.
 
@@ -287,21 +294,23 @@ The schema is defined in [backend/app/models.py](backend/app/models.py) and migr
 ### CLIP embedding and search
 
 1. The current CLIP default model is read from `ai_model_defaults`.
-2. `generate_for_asset()` stores the vector on `assets.search_vector` and records the model in `assets.search_model_id`.
-3. `GET /api/v1/search` embeds the text query with the current default CLIP model.
-4. Search returns active assets only, optionally filtered by person IDs.
+2. `EmbeddingService` delegates model execution through an embedding provider interface.
+3. `generate_for_asset()` stores the vector on `assets.search_vector` and records the model in `assets.search_model_id`.
+4. `GET /api/v1/search` embeds the text query with the current default CLIP model.
+5. Search returns active assets only, optionally filtered by person IDs.
 
 ### Face detection
 
 1. Face processing uses the current default `face_recognition` model from `ai_model_defaults`.
-2. Images are passed through InsightFace Buffalo-L.
-3. Each detected face stores:
+2. `FaceProcessingService` resolves a face-detection provider and uses the default InsightFace-backed implementation unless a different provider is injected.
+3. Images are passed through InsightFace Buffalo-L.
+4. Each detected face stores:
    - bounding box
    - confidence
    - embedding
    - `face_model_id`
    - unconfirmed/unexcluded defaults
-4. Existing confirmed faces are preserved on forced reprocessing.
+5. Existing confirmed faces are preserved on forced reprocessing.
 
 ### Incremental face matching
 
@@ -380,6 +389,7 @@ Used after new face detection and after restore follow-up when current-model fac
 
 - Long-running operations write to `jobs`.
 - Queue-triggered flows also write user-facing `notifications`.
+- Shared worker lifecycle state transitions such as `running`, `failed`, `completed`, and manual parent-child completion hooks are centralized in `backend/app/services/jobs/context.py`.
 - Current job families include:
   - library scan
   - asset metadata processing
@@ -660,6 +670,11 @@ Important route groups:
 - Current defaults come from `ai_model_defaults`.
 - CLIP search uses the current default `clip_embedding` model.
 - Face processing, clustering, and incremental matching use the current default `face_recognition` model.
+- Provider seams are intentionally narrow:
+  - `EmbeddingService` owns orchestration and persistence
+  - provider implementations own model runtime calls
+  - `FaceProcessingService` owns orchestration and persistence
+  - face-detection providers own detector/runtime integration
 
 ### Manual corrections vs AI
 
