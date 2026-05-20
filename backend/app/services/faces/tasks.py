@@ -1,56 +1,27 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 from uuid import UUID
 
 from sqlmodel import Session
 
 from app.core.database import engine
+from app.services.ai_models.repository import (
+    AI_MODEL_TASK_FACE_RECOGNITION,
+    AIModelConfigurationError,
+)
+from app.services.ai_processing.service import AIProcessingTrackerService
 from app.services.face_assignment.service import (
     FaceAssignmentService,
     FaceAssignmentServiceError,
 )
 from app.services.faces.service import FaceProcessingService, FaceProcessingServiceError
 from app.services.jobs.service import JobService
+from app.services.manual_jobs.service import ManualJobService
 from app.services.notifications.service import NotificationService
 from app.services.notifications.types import NotificationCategory, NotificationLevel
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class FaceBackfillStats:
-    total: int = 0
-    processed: int = 0
-    generated: int = 0
-    skipped: int = 0
-    failed: int = 0
-
-    def to_result(self) -> dict[str, int]:
-        return {
-            "total": self.total,
-            "processed": self.processed,
-            "generated": self.generated,
-            "skipped": self.skipped,
-            "failed": self.failed,
-        }
-
-
-def create_backfill_job(
-    *,
-    force: bool = False,
-    auto_match: bool = False,
-) -> tuple[UUID, int]:
-    with Session(engine) as session:
-        face_service = FaceProcessingService(session)
-        _, total = face_service.count_assets_pending_face_processing(force=force)
-        job = JobService(session).create_job(
-            "generate_missing_asset_faces",
-            parameters={"force": force, "auto_match": auto_match},
-            progress_total=total,
-        )
-        return job.id, total
 
 
 def _mark_job_failed(
@@ -85,10 +56,26 @@ async def process_asset_faces(
     asset_uuid = UUID(asset_id)
     with Session(engine) as session:
         job_service = JobService(session)
+        manual_job_service = ManualJobService(session)
+        tracker = AIProcessingTrackerService(session)
+        face_service = FaceProcessingService(session)
         if job_uuid is not None:
             job_service.mark_running(job_uuid, message="Processing asset faces")
         try:
-            result = FaceProcessingService(session).process_asset_faces(
+            face_model = face_service.ai_model_repository.get_default_model_for_task(
+                AI_MODEL_TASK_FACE_RECOGNITION
+            )
+        except AIModelConfigurationError:
+            face_model = None
+        if face_model is not None:
+            tracker.mark_running(
+                asset_id=asset_uuid,
+                ai_model_id=face_model.id,
+                task=AI_MODEL_TASK_FACE_RECOGNITION,
+                job_id=job_uuid,
+            )
+        try:
+            result = face_service.process_asset_faces(
                 asset_uuid,
                 force=force,
             )
@@ -106,7 +93,24 @@ async def process_asset_faces(
                 asset_id=asset_uuid,
                 details={"asset_id": asset_id},
             )
+            if face_model is not None:
+                tracker.mark_failed(
+                    asset_id=asset_uuid,
+                    ai_model_id=face_model.id,
+                    task=AI_MODEL_TASK_FACE_RECOGNITION,
+                    job_id=job_uuid,
+                    error_message=str(exc),
+                )
+            if job_uuid is not None:
+                manual_job_service.on_child_job_terminal(job_uuid)
             return
+        tracker.mark_completed(
+            asset_id=asset_uuid,
+            ai_model_id=result.model_id,
+            task=AI_MODEL_TASK_FACE_RECOGNITION,
+            job_id=job_uuid,
+            output_count=result.detected_faces,
+        )
         if job_uuid is not None:
             job_service.complete_job(
                 job_uuid,
@@ -137,89 +141,4 @@ async def process_asset_faces(
                 },
                 message="Asset faces processed",
             )
-
-
-async def generate_missing_asset_faces(
-    _: dict[str, object],
-    job_id: str,
-    force: bool = False,
-    auto_match: bool = False,
-) -> dict[str, int]:
-    job_uuid = UUID(job_id)
-    stats = FaceBackfillStats()
-    with Session(engine) as session:
-        job_service = JobService(session)
-        notification_service = NotificationService(session)
-        face_service = FaceProcessingService(session)
-        assignment_service = FaceAssignmentService(session)
-        _, asset_ids = face_service.list_asset_ids_pending_face_processing(force=force)
-        stats = FaceBackfillStats(total=len(asset_ids))
-        job_service.mark_running(job_uuid, message="Generating missing asset faces")
-        job_service.update_progress(job_uuid, total=stats.total)
-        notification_service.create_notification(
-            level=NotificationLevel.INFO,
-            category=NotificationCategory.FACE,
-            title="Face backfill started",
-            message="Generating face detections for eligible image assets.",
-            related_job_id=job_uuid,
-            details={
-                "total": str(stats.total),
-                "force": str(force),
-                "auto_match": str(auto_match),
-            },
-        )
-
-        for index, asset_uuid in enumerate(asset_ids, start=1):
-            try:
-                result = face_service.process_asset_faces(asset_uuid, force=force)
-                if auto_match and result.processed:
-                    assignment_service.assign_faces_for_asset(asset_uuid)
-            except (FaceProcessingServiceError, FaceAssignmentServiceError) as exc:
-                logger.warning("Face backfill failed for asset %s: %s", asset_uuid, exc)
-                stats = FaceBackfillStats(
-                    total=stats.total,
-                    processed=index,
-                    generated=stats.generated,
-                    skipped=stats.skipped,
-                    failed=stats.failed + 1,
-                )
-                notification_service.create_notification(
-                    level=NotificationLevel.ERROR,
-                    category=NotificationCategory.FACE,
-                    title="Face processing failed",
-                    message=str(exc),
-                    related_job_id=job_uuid,
-                    related_asset_id=asset_uuid,
-                )
-            else:
-                stats = FaceBackfillStats(
-                    total=stats.total,
-                    processed=index,
-                    generated=stats.generated + result.faces_created,
-                    skipped=stats.skipped + int(result.skipped),
-                    failed=stats.failed,
-                )
-            job_service.update_progress(
-                job_uuid,
-                current=stats.processed,
-                total=stats.total,
-                message=(
-                    f"Processed {stats.processed}/{stats.total} assets, "
-                    f"created {stats.generated} faces, skipped {stats.skipped}, failed {stats.failed}"
-                ),
-            )
-
-        job_service.complete_job(
-            job_uuid,
-            result=stats.to_result(),
-            message="Face backfill completed",
-        )
-        notification_service.create_notification(
-            level=NotificationLevel.SUCCESS,
-            category=NotificationCategory.FACE,
-            title="Face backfill completed",
-            message="Face processing completed.",
-            related_job_id=job_uuid,
-            details={key: str(value) for key, value in stats.to_result().items()},
-        )
-        return stats.to_result()
+            manual_job_service.on_child_job_terminal(job_uuid)

@@ -20,24 +20,6 @@ from app.services.people_clustering.service import (
 logger = logging.getLogger(__name__)
 
 
-def create_clustering_job(
-    *,
-    threshold: float = CLUSTER_DISTANCE_THRESHOLD,
-    top_k: int = CLUSTER_TOP_K,
-    min_cluster_size: int = CLUSTER_MIN_SIZE,
-) -> UUID:
-    with Session(engine) as session:
-        job = JobService(session).create_job(
-            "cluster_faces",
-            parameters={
-                "threshold": threshold,
-                "top_k": top_k,
-                "min_cluster_size": min_cluster_size,
-            },
-        )
-        return job.id
-
-
 async def cluster_faces(
     _: dict[str, object],
     job_id: str,

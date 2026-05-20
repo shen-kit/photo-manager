@@ -43,7 +43,6 @@ from app.services.assets.media import (
     validate_supported_media,
 )
 from app.services.jobs.queue import enqueue_asset_processing_job
-from app.services.jobs.queue import enqueue_scan_job
 from app.services.jobs.service import JobService
 from app.services.notifications.service import NotificationService
 from app.services.notifications.types import NotificationCategory, NotificationLevel
@@ -61,10 +60,6 @@ class AssetProcessResult:
 
 
 @dataclass(frozen=True)
-class AssetScanEnqueueResult:
-    job_id: UUID
-
-
 def _generate_fast_artifacts(
     asset_id: UUID, original_path: Path, include_small: bool
 ) -> None:
@@ -237,36 +232,6 @@ class AssetService:
         self, file_path: str, user_id: UUID
     ) -> AssetProcessResult:
         return await self.process_new_asset(file_path, user_id, restore_deleted=True)
-
-    async def enqueue_scan(
-        self, requested_by_user_id: UUID | None = None
-    ) -> AssetScanEnqueueResult:
-        job_service = JobService(self.session)
-        notification_service = NotificationService(self.session)
-        job = job_service.create_job(
-            "scan_library",
-            parameters={
-                "root": str(MEDIA_ORIGINALS_DIR),
-                "requested_by_user_id": str(requested_by_user_id)
-                if requested_by_user_id is not None
-                else None,
-            },
-        )
-        queued_job = await enqueue_scan_job(job.id)
-        if not queued_job:
-            job_service.fail_job(job.id, "Failed to enqueue library scan job")
-            notification_service.create_notification(
-                level=NotificationLevel.ERROR,
-                category=NotificationCategory.SCAN,
-                title="Scan failed",
-                message="The library scan could not be queued.",
-                related_job_id=job.id,
-            )
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Failed to enqueue library scan job",
-            )
-        return AssetScanEnqueueResult(job_id=job.id)
 
     def list_assets(
         self, *, page: int, page_size: int

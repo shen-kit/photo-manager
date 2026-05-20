@@ -11,7 +11,6 @@ from fastapi import HTTPException
 from starlette.requests import Request
 
 from app.api.v1.features.faces import (
-    backfill_asset_faces,
     list_asset_faces,
     match_asset_faces,
     process_asset_faces,
@@ -91,39 +90,6 @@ class FacesApiTest(unittest.TestCase):
                 "headers": [],
             }
         )
-
-    def test_backfill_endpoint_enqueues_job(self) -> None:
-        job = Job(
-            id=uuid4(),
-            type="generate_missing_asset_faces",
-            status="queued",
-            progress_current=0,
-            progress_total=4,
-            created_at=datetime.now(timezone.utc),
-        )
-        job_service = _FakeJobService(job)
-
-        with (
-            patch(
-                "app.api.v1.features.faces.create_backfill_job",
-                return_value=(job.id, 4),
-            ),
-            patch(
-                "app.api.v1.features.faces.enqueue_missing_asset_faces_job",
-                new=AsyncMock(return_value=True),
-            ) as enqueue_mock,
-        ):
-            response = asyncio.run(
-                backfill_asset_faces(
-                    force=True,
-                    auto_match=False,
-                    job_service=job_service,
-                    current_user=self.user,
-                )
-            )
-
-        self.assertEqual(response.id, job.id)
-        enqueue_mock.assert_awaited_once_with(job.id, force=True, auto_match=False)
 
     def test_process_asset_endpoint_enqueues_specific_asset(self) -> None:
         asset_id = uuid4()

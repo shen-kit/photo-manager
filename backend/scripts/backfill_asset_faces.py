@@ -9,21 +9,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sqlmodel import Session
 
 from app.core.database import engine
-from app.services.faces.tasks import create_backfill_job
-from app.services.jobs.queue import enqueue_missing_asset_faces_job
-from app.services.jobs.service import JobService
+from app.services.manual_jobs.schemas import ManualJobRunRequest
+from app.services.manual_jobs.service import ManualJobService
 
 
 async def main() -> int:
     force = "--force" in sys.argv[1:]
-    job_id, total = create_backfill_job(force=force)
-    queued = await enqueue_missing_asset_faces_job(job_id, force=force)
-    if not queued:
-        with Session(engine) as session:
-            JobService(session).fail_job(job_id, "Failed to enqueue face backfill job")
-        print(f"Failed to enqueue job {job_id}")
-        return 1
-    print(f"Queued job {job_id} for {total} assets")
+    with Session(engine) as session:
+        job = await ManualJobService(session).run_manual_job(
+            job_key="run_missing_or_outdated_face_recognition",
+            request=ManualJobRunRequest(params={"force": force, "auto_match": False}),
+        )
+        total = job.progress_total or 0
+    print(f"Queued job {job.id} for {total} assets")
     return 0
 
 

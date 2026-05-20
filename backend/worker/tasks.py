@@ -1,28 +1,26 @@
 from __future__ import annotations
 
+from uuid import UUID
+
 from app.services.embeddings.tasks import (
     generate_asset_clip_embedding as generate_asset_clip_embedding_job,
-    generate_missing_asset_clip_embeddings as generate_missing_asset_clip_embeddings_job,
 )
 from app.services.faces.tasks import (
-    generate_missing_asset_faces as generate_missing_asset_faces_job,
     process_asset_faces as process_asset_faces_job,
-)
-from app.services.people_clustering.tasks import (
-    cluster_faces as cluster_faces_job,
 )
 from app.services.assets.jobs import (
     process_asset_metadata as process_asset_metadata_job,
 )
-from app.services.assets.scan import (
-    scan_originals_library as scan_originals_library_job,
-)
+from app.services.manual_jobs.service import ManualJobService
+from app.core.database import engine
+from sqlmodel import Session
 
 
 async def process_asset_metadata(
     ctx: dict[str, object],
     asset_id: str,
     job_id: str | None = None,
+    parent_job_id: str | None = None,
     enqueue_embedding: bool = True,
     enqueue_faces: bool = True,
 ) -> None:
@@ -30,13 +28,10 @@ async def process_asset_metadata(
         ctx,
         asset_id,
         job_id,
+        parent_job_id,
         enqueue_embedding,
         enqueue_faces,
     )
-
-
-async def scan_originals_library(ctx: dict[str, object], job_id: str) -> dict[str, int]:
-    return await scan_originals_library_job(ctx, job_id)
 
 
 async def generate_asset_clip_embedding(
@@ -46,14 +41,6 @@ async def generate_asset_clip_embedding(
     job_id: str | None = None,
 ) -> None:
     await generate_asset_clip_embedding_job(ctx, asset_id, force, job_id)
-
-
-async def generate_missing_asset_clip_embeddings(
-    ctx: dict[str, object],
-    job_id: str,
-    force: bool = False,
-) -> dict[str, int]:
-    return await generate_missing_asset_clip_embeddings_job(ctx, job_id, force)
 
 
 async def process_asset_faces(
@@ -66,26 +53,25 @@ async def process_asset_faces(
     await process_asset_faces_job(ctx, asset_id, force, auto_match, job_id)
 
 
-async def generate_missing_asset_faces(
-    ctx: dict[str, object],
+async def run_manual_job(
+    _: dict[str, object],
     job_id: str,
-    force: bool = False,
-    auto_match: bool = False,
-) -> dict[str, int]:
-    return await generate_missing_asset_faces_job(ctx, job_id, force, auto_match)
+) -> None:
+    with Session(engine) as session:
+        await ManualJobService(session).execute_parent_job(job_id=UUID(job_id))
 
 
-async def cluster_faces(
-    ctx: dict[str, object],
-    job_id: str,
-    threshold: float,
-    top_k: int,
-    min_cluster_size: int,
-) -> dict[str, int]:
-    return await cluster_faces_job(
-        ctx,
-        job_id,
-        threshold,
-        top_k,
-        min_cluster_size,
-    )
+async def schedule_manual_job_batch(
+    _: dict[str, object],
+    parent_job_id: str,
+    job_key: str,
+    payload: dict[str, object],
+    asset_ids: list[str],
+) -> None:
+    with Session(engine) as session:
+        await ManualJobService(session).execute_batch(
+            parent_job_id=UUID(parent_job_id),
+            job_key=job_key,
+            payload=payload,
+            asset_ids=[UUID(asset_id) for asset_id in asset_ids],
+        )

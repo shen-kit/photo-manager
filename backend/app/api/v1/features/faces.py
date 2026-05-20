@@ -20,11 +20,7 @@ from app.services.faces.schemas import (
     FaceUpdateRequest,
 )
 from app.services.faces.service import FaceManagementService, FaceManagementServiceError
-from app.services.faces.tasks import create_backfill_job
-from app.services.jobs.queue import (
-    enqueue_asset_faces_job,
-    enqueue_missing_asset_faces_job,
-)
+from app.services.jobs.queue import enqueue_asset_faces_job
 from app.services.jobs.schemas import JobRead
 from app.services.jobs.service import JobService, get_job_service
 
@@ -55,34 +51,6 @@ def _build_face_response(request: Request, face: Face) -> AssetFaceRead:
         created_at=face.created_at,
         updated_at=face.updated_at,
     )
-
-
-@router.post(
-    "/faces/backfill",
-    response_model=JobRead,
-    status_code=status.HTTP_202_ACCEPTED,
-)
-async def backfill_asset_faces(
-    force: bool = Query(default=False),
-    auto_match: bool = Query(default=False),
-    job_service: JobService = Depends(get_job_service),
-    current_user: User = Depends(get_current_user),
-) -> JobRead:
-    del current_user
-    job_id, _ = create_backfill_job(force=force, auto_match=auto_match)
-    queued = await enqueue_missing_asset_faces_job(
-        job_id,
-        force=force,
-        auto_match=auto_match,
-    )
-    if not queued:
-        job_service.fail_job(job_id, "Failed to enqueue face backfill job")
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Failed to enqueue face backfill job",
-        )
-    job = job_service.get_job(job_id)
-    return JobRead.model_validate(job, from_attributes=True)
 
 
 @router.post(

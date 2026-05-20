@@ -140,9 +140,17 @@ def is_temporary_original_path(path: Path) -> bool:
     return relative.parts[:1] == (".tmp",)
 
 
-def canonical_original_path(file_hash: str, suffix: str) -> Path:
+def canonical_original_path(
+    file_hash: str,
+    suffix: str,
+    *,
+    timestamp: datetime | None = None,
+) -> Path:
     normalized_suffix = suffix.lower()
-    now = datetime.now(timezone.utc)
+    now = timestamp or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    now = now.astimezone(timezone.utc)
     return (
         MEDIA_ORIGINALS_DIR
         / now.strftime("%Y")

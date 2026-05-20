@@ -8,17 +8,11 @@ from sqlmodel import Session
 from app.core.auth import get_current_user
 from app.core.database import get_session
 from app.models import User
-from app.services.embeddings.tasks import (
-    create_backfill_job,
-    enqueue_missing_asset_embeddings_job,
-)
 from app.services.embeddings.service import (
     EmbeddingServiceError,
     SEARCH_DEFAULT_LIMIT,
     SEARCH_MAX_LIMIT,
 )
-from app.services.jobs.schemas import JobRead
-from app.services.jobs.service import JobService, get_job_service
 from app.services.search.schemas import (
     SearchFaceSummary,
     SearchPersonSummary,
@@ -74,25 +68,6 @@ def _build_face_models(rows: list[dict[str, object]] | None) -> list[SearchFaceS
             )
         )
     return items
-
-
-@router.post("/backfill", response_model=JobRead, status_code=status.HTTP_202_ACCEPTED)
-async def backfill_clip_embeddings(
-    force: bool = Query(default=False),
-    job_service: JobService = Depends(get_job_service),
-    current_user: User = Depends(get_current_user),
-) -> JobRead:
-    del current_user
-    job_id, _ = create_backfill_job(force=force)
-    queued = await enqueue_missing_asset_embeddings_job(job_id, force=force)
-    if not queued:
-        job_service.fail_job(job_id, "Failed to enqueue CLIP embedding backfill job")
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Failed to enqueue CLIP embedding backfill job",
-        )
-    job = job_service.get_job(job_id)
-    return JobRead.model_validate(job, from_attributes=True)
 
 
 @router.get("", response_model=SearchResponse, include_in_schema=False)

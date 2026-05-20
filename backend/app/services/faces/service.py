@@ -9,6 +9,7 @@ from uuid import UUID
 from sqlmodel import Session
 
 from app.models import Asset, Face
+from app.services.ai_processing.repository import AIProcessingRepository
 from app.services.ai_models.repository import (
     AI_MODEL_TASK_FACE_RECOGNITION,
     AIModelConfigurationError,
@@ -55,11 +56,15 @@ class FaceProcessingService:
         session: Session,
         *,
         repository: FaceRepository | None = None,
+        ai_processing_repository: AIProcessingRepository | None = None,
         ai_model_repository: AIModelRepository | None = None,
         detector: Callable[[Path], list[DetectedFace]] = detect_faces,
     ) -> None:
         self.session = session
         self.repository = repository or FaceRepository(session)
+        self.ai_processing_repository = (
+            ai_processing_repository or AIProcessingRepository(session)
+        )
         self.ai_model_repository = ai_model_repository or AIModelRepository(session)
         self.detector = detector
 
@@ -101,6 +106,23 @@ class FaceProcessingService:
             asset_id=asset.id,
             model_id=face_model.id,
         )
+        processing_completed = (
+            self.ai_processing_repository.asset_has_completed_processing(
+                asset_id=asset.id,
+                ai_model_id=face_model.id,
+                task=AI_MODEL_TASK_FACE_RECOGNITION,
+            )
+        )
+        if not force and processing_completed:
+            return FaceProcessingResult(
+                asset_id=asset.id,
+                model_id=face_model.id,
+                processed=False,
+                skipped=True,
+                faces_created=0,
+                detected_faces=total_existing,
+                deleted_unconfirmed_faces=0,
+            )
         if not force and total_existing > 0:
             return FaceProcessingResult(
                 asset_id=asset.id,
@@ -180,10 +202,17 @@ class FaceProcessingService:
             )
         except AIModelConfigurationError as exc:
             raise FaceProcessingServiceError(str(exc)) from exc
-        total = self.repository.count_assets_pending_face_processing(
-            model_id=face_model.id,
-            force=force,
-        )
+        if force:
+            total = self.repository.count_assets_pending_face_processing(
+                model_id=face_model.id,
+                force=True,
+            )
+        else:
+            total = len(
+                self.ai_processing_repository.list_asset_ids_needing_face_processing(
+                    ai_model_id=face_model.id
+                )
+            )
         return face_model.id, total
 
     def list_asset_ids_pending_face_processing(
@@ -199,12 +228,21 @@ class FaceProcessingService:
             )
         except AIModelConfigurationError as exc:
             raise FaceProcessingServiceError(str(exc)) from exc
-        asset_ids = self.repository.list_asset_ids_pending_face_processing(
-            model_id=face_model.id,
-            force=force,
-            limit=limit,
-            offset=offset,
-        )
+        if force:
+            asset_ids = self.repository.list_asset_ids_pending_face_processing(
+                model_id=face_model.id,
+                force=True,
+                limit=limit,
+                offset=offset,
+            )
+        else:
+            asset_ids = (
+                self.ai_processing_repository.list_asset_ids_needing_face_processing(
+                    ai_model_id=face_model.id,
+                    limit=limit,
+                    offset=offset,
+                )
+            )
         return face_model.id, asset_ids
 
     def _resolve_source_path(self, asset: Asset) -> Path:

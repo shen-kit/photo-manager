@@ -14,6 +14,7 @@ from app.services.jobs.queue import enqueue_asset_embedding_job
 from app.services.jobs.queue import enqueue_asset_faces_job
 from app.services.jobs.queue import enqueue_asset_processing_job
 from app.services.jobs.service import JobService
+from app.services.manual_jobs.service import ManualJobService
 from app.services.notifications.service import NotificationService
 from app.services.notifications.types import NotificationCategory, NotificationLevel
 from app.services.assets.media import (
@@ -124,12 +125,19 @@ async def process_asset_metadata(
     _: dict[str, object],
     asset_id: str,
     job_id: str | None = None,
+    parent_job_id: str | None = None,
     enqueue_embedding: bool = True,
     enqueue_faces: bool = True,
 ) -> None:
-    related_job_id = UUID(job_id) if job_id else None
+    task_job_id = UUID(job_id) if job_id else None
+    related_job_id = UUID(parent_job_id) if parent_job_id else None
+    notification_job_id = related_job_id or task_job_id
     with Session(engine) as session:
+        job_service = JobService(session)
+        manual_job_service = ManualJobService(session)
         notification_service = NotificationService(session)
+        if task_job_id is not None:
+            job_service.mark_running(task_job_id, message="Processing asset metadata")
 
         def notify_processing_error(
             *,
@@ -143,9 +151,17 @@ async def process_asset_metadata(
                 title="Asset processing failed",
                 message=message,
                 details=details,
-                related_job_id=related_job_id,
+                related_job_id=notification_job_id,
                 related_asset_id=asset_id_value,
             )
+
+        def fail_task_job(
+            message: str, *, result: dict[str, object] | None = None
+        ) -> None:
+            if task_job_id is None:
+                return
+            job_service.fail_job(task_job_id, message, result=result)
+            manual_job_service.on_child_job_terminal(task_job_id)
 
         asset = session.get(Asset, UUID(asset_id))
         if asset is None:
@@ -160,6 +176,10 @@ async def process_asset_metadata(
                     message="The asset no longer exists for metadata processing.",
                     details={"asset_id": asset_id},
                 )
+            fail_task_job(
+                "The asset no longer exists for metadata processing.",
+                result={"asset_id": asset_id, "skipped": False},
+            )
             return
 
         try:
@@ -178,6 +198,10 @@ async def process_asset_metadata(
                 asset_id_value=asset.id,
                 details={"master_path": asset.master_path},
             )
+            fail_task_job(
+                "The asset source path is invalid.",
+                result={"asset_id": asset_id, "skipped": False},
+            )
             return
         if not original_path.is_file():
             logger.warning(
@@ -192,6 +216,10 @@ async def process_asset_metadata(
                 message="The asset source file is missing.",
                 asset_id_value=asset.id,
                 details={"master_path": asset.master_path},
+            )
+            fail_task_job(
+                "The asset source file is missing.",
+                result={"asset_id": asset_id, "skipped": False},
             )
             return
 
@@ -233,6 +261,10 @@ async def process_asset_metadata(
                     message="Video metadata inspection failed.",
                     asset_id_value=asset.id,
                     details={"master_path": asset.master_path},
+                )
+                fail_task_job(
+                    "Video metadata inspection failed.",
+                    result={"asset_id": asset_id, "skipped": False},
                 )
                 return
             asset.width = video_metadata.width
@@ -276,6 +308,10 @@ async def process_asset_metadata(
                     asset_id_value=asset.id,
                     details={"master_path": asset.master_path},
                 )
+                fail_task_job(
+                    "Video preview generation failed.",
+                    result={"asset_id": asset_id, "skipped": False},
+                )
                 return
             asset.preview_status = VIDEO_PREVIEW_STATUS_READY
 
@@ -292,7 +328,7 @@ async def process_asset_metadata(
                     category=NotificationCategory.SEARCH,
                     title="Embedding job failed to queue",
                     message="The asset metadata was processed, but semantic embedding generation was not queued.",
-                    related_job_id=related_job_id,
+                    related_job_id=notification_job_id,
                     related_asset_id=asset.id,
                     details={"asset_id": str(asset.id)},
                 )
@@ -307,7 +343,21 @@ async def process_asset_metadata(
                     category=NotificationCategory.FACE,
                     title="Face processing job failed to queue",
                     message="The asset metadata was processed, but face processing was not queued.",
-                    related_job_id=related_job_id,
+                    related_job_id=notification_job_id,
                     related_asset_id=asset.id,
                     details={"asset_id": str(asset.id)},
                 )
+        if task_job_id is not None:
+            job_service.complete_job(
+                task_job_id,
+                result={
+                    "asset_id": asset_id,
+                    "processed": True,
+                    "skipped": False,
+                    "queued_embedding_job": enqueue_embedding,
+                    "queued_face_job": enqueue_faces
+                    and is_supported_image_mime_type(asset.mime_type),
+                },
+                message="Asset metadata processed",
+            )
+            manual_job_service.on_child_job_terminal(task_job_id)

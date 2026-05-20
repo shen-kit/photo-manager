@@ -167,6 +167,18 @@ class Job(SQLModel, table=True):
     __table_args__ = (
         Index("idx_jobs_status", "status"),
         Index("idx_jobs_type", "type"),
+        Index("idx_jobs_job_key_status", "job_key", "status"),
+        Index("idx_jobs_parent_job_id_created_at", "parent_job_id", desc("created_at")),
+        Index("idx_jobs_related_asset_id", "related_asset_id"),
+        Index(
+            "uq_jobs_parent_related_asset",
+            "parent_job_id",
+            "related_asset_id",
+            unique=True,
+            postgresql_where=text(
+                "parent_job_id IS NOT NULL AND related_asset_id IS NOT NULL"
+            ),
+        ),
         Index("idx_jobs_created_at", desc("created_at")),
     )
 
@@ -175,6 +187,7 @@ class Job(SQLModel, table=True):
         sa_column=Column(PGUUID(as_uuid=True), primary_key=True, nullable=False),
     )
     type: str = Field(sa_column=Column(Text, nullable=False))
+    job_key: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
     status: str = Field(sa_column=Column(Text, nullable=False))
     progress_current: int = Field(
         default=0, sa_column=Column(Integer, nullable=False, server_default="0")
@@ -194,6 +207,26 @@ class Job(SQLModel, table=True):
     error_message: str | None = Field(
         default=None, sa_column=Column(Text, nullable=True)
     )
+    parent_job_id: UUID | None = Field(
+        default=None,
+        sa_column=Column(
+            PGUUID(as_uuid=True),
+            ForeignKey("jobs.id", ondelete="SET NULL"),
+            nullable=True,
+        ),
+    )
+    related_asset_id: UUID | None = Field(
+        default=None,
+        sa_column=Column(
+            PGUUID(as_uuid=True),
+            ForeignKey("assets.id", ondelete="SET NULL"),
+            nullable=True,
+        ),
+    )
+    is_visible: bool = Field(
+        default=True,
+        sa_column=Column(Boolean, nullable=False, server_default=text("true")),
+    )
     created_at: datetime = Field(
         default_factory=utc_now,
         sa_column=Column(DateTime(timezone=True), nullable=False),
@@ -203,6 +236,84 @@ class Job(SQLModel, table=True):
     )
     finished_at: datetime | None = Field(
         default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
+
+
+class AssetAIProcessing(SQLModel, table=True):
+    __tablename__ = "asset_ai_processing"
+    __table_args__ = (
+        UniqueConstraint(
+            "asset_id",
+            "ai_model_id",
+            "task",
+            name="uq_asset_ai_processing_asset_model_task",
+        ),
+        Index(
+            "idx_asset_ai_processing_task_model_status",
+            "task",
+            "ai_model_id",
+            "status",
+        ),
+        Index("idx_asset_ai_processing_asset_task", "asset_id", "task"),
+        Index("idx_asset_ai_processing_last_job_id", "last_job_id"),
+    )
+
+    id: UUID = Field(
+        default_factory=uuid4,
+        sa_column=Column(PGUUID(as_uuid=True), primary_key=True, nullable=False),
+    )
+    asset_id: UUID = Field(
+        sa_column=Column(
+            PGUUID(as_uuid=True),
+            ForeignKey("assets.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+    )
+    ai_model_id: int = Field(
+        sa_column=Column(
+            Integer,
+            ForeignKey("ai_models.id", ondelete="RESTRICT"),
+            nullable=False,
+        ),
+    )
+    task: str = Field(sa_column=Column(Text, nullable=False))
+    status: str = Field(sa_column=Column(Text, nullable=False))
+    output_count: int = Field(
+        default=0, sa_column=Column(Integer, nullable=False, server_default="0")
+    )
+    error_message: str | None = Field(
+        default=None, sa_column=Column(Text, nullable=True)
+    )
+    last_job_id: UUID | None = Field(
+        default=None,
+        sa_column=Column(
+            PGUUID(as_uuid=True),
+            ForeignKey("jobs.id", ondelete="SET NULL"),
+            nullable=True,
+        ),
+    )
+    started_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
+    processed_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
+    created_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(
+            DateTime(timezone=True),
+            nullable=False,
+            server_default=text("now()"),
+        ),
+    )
+    updated_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(
+            DateTime(timezone=True),
+            nullable=False,
+            server_default=text("now()"),
+            onupdate=utc_now,
+        ),
     )
 
 

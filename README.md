@@ -262,7 +262,7 @@ The schema is defined in [backend/app/models.py](backend/app/models.py) and migr
 
 ### Bulk scan
 
-1. `POST /api/v1/assets/scan` creates a job.
+1. `POST /api/v1/jobs/bulk_scan/run` creates a manual job.
 2. The worker walks `storage/originals/` recursively, excluding `.tmp`.
 3. Supported files are hashed and deduplicated by `file_hash`.
 4. Each new asset row is inserted and queued for metadata processing.
@@ -325,7 +325,7 @@ Used after new face detection and after restore follow-up when current-model fac
 
 ### Bulk face clustering
 
-1. `POST /api/v1/people/cluster` enqueues a clustering job.
+1. `POST /api/v1/jobs/cluster_faces/run` enqueues a clustering job.
 2. The clustering service only considers unassigned candidate faces for the current face model.
 3. Connected components are built from neighbour links under a distance threshold.
 4. A component either:
@@ -541,21 +541,25 @@ Scan the originals library:
 
 ```bash
 curl -X POST -H "Authorization: Bearer $TOKEN" \
-  http://localhost:8000/api/v1/assets/scan
+  http://localhost:8000/api/v1/jobs/bulk_scan/run
 ```
 
 Backfill CLIP embeddings:
 
 ```bash
 curl -X POST -H "Authorization: Bearer $TOKEN" \
-  "http://localhost:8000/api/v1/search/backfill?force=false"
+  -H "Content-Type: application/json" \
+  -d '{"params":{"force":false}}' \
+  http://localhost:8000/api/v1/jobs/run_missing_or_outdated_clip_embeddings/run
 ```
 
 Backfill face detection:
 
 ```bash
 curl -X POST -H "Authorization: Bearer $TOKEN" \
-  "http://localhost:8000/api/v1/faces/backfill?force=false&auto_match=false"
+  -H "Content-Type: application/json" \
+  -d '{"params":{"force":false,"auto_match":false}}' \
+  http://localhost:8000/api/v1/jobs/run_missing_or_outdated_face_recognition/run
 ```
 
 Process faces for one asset:
@@ -577,8 +581,8 @@ Run people clustering:
 ```bash
 curl -X POST -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"threshold":0.4,"top_k":30,"min_cluster_size":2}' \
-  http://localhost:8000/api/v1/people/cluster
+  -d '{"params":{"threshold":0.4,"top_k":30,"min_cluster_size":2}}' \
+  http://localhost:8000/api/v1/jobs/cluster_faces/run
 ```
 
 Restore one trashed asset:
@@ -627,12 +631,12 @@ Important route groups:
 | Area | Routes |
 | --- | --- |
 | Auth | `/api/v1/auth/register`, `/login`, `/refresh`, `/logout`, `/me` |
-| Assets | `/api/v1/assets/upload`, `/ingest`, `/scan`, `GET /api/v1/assets`, `GET/PATCH/DELETE /api/v1/assets/{asset_id}` |
-| Search | `GET /api/v1/search`, `POST /api/v1/search/backfill` |
-| Faces | `POST /api/v1/faces/backfill`, `POST /api/v1/assets/{asset_id}/faces/process`, `POST /api/v1/assets/{asset_id}/faces/match`, `GET /api/v1/assets/{asset_id}/faces`, `PATCH /api/v1/faces/{face_id}` |
-| People | `GET /api/v1/people`, `GET/PATCH /api/v1/people/{person_id}`, `PATCH /api/v1/people/{person_id}/thumbnail`, `GET /api/v1/people/{person_id}/assets`, `POST /api/v1/people/{source_person_id}/merge-into/{target_person_id}`, `POST /api/v1/people/cluster` |
+| Assets | `/api/v1/assets/upload`, `/ingest`, `GET /api/v1/assets`, `GET/PATCH/DELETE /api/v1/assets/{asset_id}` |
+| Search | `GET /api/v1/search` |
+| Faces | `POST /api/v1/assets/{asset_id}/faces/process`, `POST /api/v1/assets/{asset_id}/faces/match`, `GET /api/v1/assets/{asset_id}/faces`, `PATCH /api/v1/faces/{face_id}` |
+| People | `GET /api/v1/people`, `GET/PATCH /api/v1/people/{person_id}`, `PATCH /api/v1/people/{person_id}/thumbnail`, `GET /api/v1/people/{person_id}/assets`, `POST /api/v1/people/{source_person_id}/merge-into/{target_person_id}` |
 | Trash | `GET /api/v1/trash/assets`, `GET /api/v1/trash/assets/{asset_id}`, `POST /api/v1/trash/assets/{asset_id}/restore`, `POST /api/v1/trash/assets/restore` |
-| Jobs | `GET /api/v1/jobs`, `GET /api/v1/jobs/{job_id}` |
+| Jobs | `GET /api/v1/jobs/available`, `POST /api/v1/jobs/{job_key}/run`, `GET /api/v1/jobs`, `GET /api/v1/jobs/{job_id}` |
 | Notifications | `GET /api/v1/notifications`, `POST /api/v1/notifications/{notification_id}/read`, `POST /api/v1/notifications/read-all`, `DELETE /api/v1/notifications/{notification_id}`, `DELETE /api/v1/notifications` |
 
 ## Development notes

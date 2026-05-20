@@ -12,7 +12,6 @@ from app.core.database import engine
 from app.models import Asset
 from app.services.assets.hashing import compute_sha256
 from app.services.jobs.queue import enqueue_asset_processing_job
-from app.services.jobs.queue import enqueue_scan_job
 from app.services.assets.media import (
     MEDIA_ORIGINALS_DIR,
     MEDIA_ORIGINALS_TMP_DIR,
@@ -178,7 +177,10 @@ async def _process_batch(batch: list[Path], job_id: UUID) -> ScanStats:
                 stats = stats.add(ScanStats(duplicates_skipped=1))
                 continue
 
-            queued_job = await enqueue_asset_processing_job(asset.id, job_id=job_id)
+            queued_job = await enqueue_asset_processing_job(
+                asset.id,
+                parent_job_id=job_id,
+            )
             if not queued_job:
                 NotificationService(session).create_notification(
                     level=NotificationLevel.WARNING,

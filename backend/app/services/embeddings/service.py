@@ -9,6 +9,7 @@ from uuid import UUID
 from sqlmodel import Session
 
 from app.models import Asset
+from app.services.ai_processing.repository import AIProcessingRepository
 from app.services.ai_models.repository import (
     AI_MODEL_TASK_CLIP_EMBEDDING,
     AIModelConfigurationError,
@@ -44,9 +45,17 @@ class EmbeddingGenerationResult:
 
 
 class EmbeddingService:
-    def __init__(self, session: Session) -> None:
+    def __init__(
+        self,
+        session: Session,
+        *,
+        ai_processing_repository: AIProcessingRepository | None = None,
+    ) -> None:
         self.session = session
         self.repository = EmbeddingRepository(session)
+        self.ai_processing_repository = (
+            ai_processing_repository or AIProcessingRepository(session)
+        )
         self.ai_model_repository = AIModelRepository(session)
 
     def generate_for_asset(
@@ -125,10 +134,17 @@ class EmbeddingService:
             )
         except AIModelConfigurationError as exc:
             raise EmbeddingServiceError(str(exc)) from exc
-        total = self.repository.count_assets_missing_embeddings(
-            model_id=clip_model.id,
-            force=force,
-        )
+        if force:
+            total = self.repository.count_assets_missing_embeddings(
+                model_id=clip_model.id,
+                force=True,
+            )
+        else:
+            total = len(
+                self.ai_processing_repository.list_asset_ids_needing_clip_processing(
+                    ai_model_id=clip_model.id
+                )
+            )
         return clip_model.id, total
 
     def list_missing_asset_ids(
@@ -144,12 +160,21 @@ class EmbeddingService:
             )
         except AIModelConfigurationError as exc:
             raise EmbeddingServiceError(str(exc)) from exc
-        asset_ids = self.repository.list_asset_ids_missing_embeddings(
-            model_id=clip_model.id,
-            force=force,
-            limit=limit,
-            offset=offset,
-        )
+        if force:
+            asset_ids = self.repository.list_asset_ids_missing_embeddings(
+                model_id=clip_model.id,
+                force=True,
+                limit=limit,
+                offset=offset,
+            )
+        else:
+            asset_ids = (
+                self.ai_processing_repository.list_asset_ids_needing_clip_processing(
+                    ai_model_id=clip_model.id,
+                    limit=limit,
+                    offset=offset,
+                )
+            )
         return clip_model.id, asset_ids
 
     def _resolve_embedding_source(self, asset: Asset) -> Path:

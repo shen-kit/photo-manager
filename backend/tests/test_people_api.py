@@ -10,9 +10,7 @@ from fastapi import HTTPException
 from starlette.requests import Request
 
 from app.api.v1.features.people import (
-    PeopleClusteringRequest,
     get_person,
-    cluster_people,
     merge_people,
 )
 from app.models import Job, Person, User
@@ -57,87 +55,6 @@ class PeopleApiTest(unittest.TestCase):
                 "headers": [],
             }
         )
-
-    def test_cluster_endpoint_enqueues_job(self) -> None:
-        job = Job(
-            id=uuid4(),
-            type="cluster_faces",
-            status="queued",
-            progress_current=0,
-            created_at=datetime.now(timezone.utc),
-        )
-        job_service = _FakeJobService(job)
-        payload = PeopleClusteringRequest(threshold=0.35, top_k=25, min_cluster_size=3)
-
-        with (
-            patch(
-                "app.api.v1.features.people.create_clustering_job",
-                return_value=job.id,
-            ),
-            patch(
-                "app.api.v1.features.people.enqueue_face_clustering_job",
-                new=AsyncMock(return_value=True),
-            ) as enqueue_mock,
-        ):
-            response = asyncio.run(
-                cluster_people(
-                    payload=payload,
-                    job_service=job_service,
-                    current_user=self.user,
-                )
-            )
-
-        self.assertEqual(response.id, job.id)
-        enqueue_mock.assert_awaited_once_with(
-            job.id,
-            threshold=0.35,
-            top_k=25,
-            min_cluster_size=3,
-        )
-
-    def test_invalid_params_are_rejected(self) -> None:
-        job_service = _FakeJobService()
-
-        with self.assertRaises(HTTPException) as threshold_exc:
-            asyncio.run(
-                cluster_people(
-                    payload=PeopleClusteringRequest(
-                        threshold=0.1,
-                        top_k=25,
-                        min_cluster_size=3,
-                    ),
-                    job_service=job_service,
-                    current_user=self.user,
-                )
-            )
-        with self.assertRaises(HTTPException) as top_k_exc:
-            asyncio.run(
-                cluster_people(
-                    payload=PeopleClusteringRequest(
-                        threshold=0.4,
-                        top_k=3,
-                        min_cluster_size=3,
-                    ),
-                    job_service=job_service,
-                    current_user=self.user,
-                )
-            )
-        with self.assertRaises(HTTPException) as min_cluster_size_exc:
-            asyncio.run(
-                cluster_people(
-                    payload=PeopleClusteringRequest(
-                        threshold=0.4,
-                        top_k=25,
-                        min_cluster_size=1,
-                    ),
-                    job_service=job_service,
-                    current_user=self.user,
-                )
-            )
-
-        self.assertEqual(threshold_exc.exception.status_code, 422)
-        self.assertEqual(top_k_exc.exception.status_code, 422)
-        self.assertEqual(min_cluster_size_exc.exception.status_code, 422)
 
     def test_worker_task_calls_clustering_service(self) -> None:
         class _Summary:
