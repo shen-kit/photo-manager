@@ -63,8 +63,7 @@ class _FakePeopleClusteringRepository:
         self.last_model_ids.append(model_id)
         values = self.labeled_neighbors.get((str(face_id), model_id), [])
         return [
-            (self._uuid(person_id), distance)
-            for person_id, distance in values[:top_k]
+            (self._uuid(person_id), distance) for person_id, distance in values[:top_k]
         ]
 
     def create_person(self):
@@ -106,7 +105,9 @@ class PeopleClusteringServiceTest(unittest.TestCase):
             is_deprecated=False,
         )
 
-    def _candidate(self, *, confidence: float | None, crop_path: str | None) -> FaceClusterCandidate:
+    def _candidate(
+        self, *, confidence: float | None, crop_path: str | None
+    ) -> FaceClusterCandidate:
         return FaceClusterCandidate(
             id=uuid4(),
             face_model_id=17,
@@ -114,7 +115,9 @@ class PeopleClusteringServiceTest(unittest.TestCase):
             crop_path=crop_path,
         )
 
-    def test_creates_people_from_connected_components_and_skips_small_clusters(self) -> None:
+    def test_creates_people_from_connected_components_and_skips_small_clusters(
+        self,
+    ) -> None:
         a = self._candidate(confidence=0.6, crop_path=None)
         b = self._candidate(confidence=0.9, crop_path="faces/b.webp")
         c = self._candidate(confidence=0.8, crop_path=None)

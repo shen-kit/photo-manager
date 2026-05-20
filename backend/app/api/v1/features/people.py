@@ -227,7 +227,10 @@ def list_person_assets(
         page_size=page_size,
     )
     return PersonAssetListResponse(
-        items=[_build_asset_item(request, asset, tags, faces) for asset, tags, faces in rows],
+        items=[
+            _build_asset_item(request, asset, tags, faces)
+            for asset, tags, faces in rows
+        ],
         page=page,
         page_size=page_size,
         total=total,

@@ -77,9 +77,10 @@ async def enqueue_asset_faces_job(
     asset_id: UUID,
     *,
     force: bool = False,
+    auto_match: bool = True,
     job_id: UUID | None = None,
 ) -> bool:
-    args: list[object] = [str(asset_id), force]
+    args: list[object] = [str(asset_id), force, auto_match]
     if job_id is not None:
         args.append(str(job_id))
     return await enqueue_worker_job(PROCESS_ASSET_FACES_JOB_NAME, *args)
@@ -89,11 +90,13 @@ async def enqueue_missing_asset_faces_job(
     job_id: UUID,
     *,
     force: bool = False,
+    auto_match: bool = False,
 ) -> bool:
     return await enqueue_worker_job(
         GENERATE_MISSING_ASSET_FACES_JOB_NAME,
         str(job_id),
         force,
+        auto_match,
     )
 
 

@@ -14,7 +14,11 @@ class _FakePeopleRepository:
         self.deleted_people: list[Person] = []
 
     def list_people_by_ids(self, person_ids):
-        return [self.people[person_id] for person_id in person_ids if person_id in self.people]
+        return [
+            self.people[person_id]
+            for person_id in person_ids
+            if person_id in self.people
+        ]
 
     def list_person_ids_without_active_assets(self, *, person_ids):
         requested = set(person_ids)
@@ -51,7 +55,9 @@ class PeopleMaintenanceServiceTest(unittest.TestCase):
         )
 
     def test_deletes_people_without_active_assets_and_refreshes_remaining(self) -> None:
-        kept_person = self._person(thumbnail_path="generated/people/thumbnails/keep.webp")
+        kept_person = self._person(
+            thumbnail_path="generated/people/thumbnails/keep.webp"
+        )
         orphaned_person = self._person(
             thumbnail_path="generated/people/thumbnails/delete.webp"
         )

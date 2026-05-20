@@ -128,9 +128,7 @@ class PeopleClusteringRepository:
         if not face_ids:
             return 0
         statement = (
-            sa.update(Face)
-            .where(Face.id.in_(face_ids))
-            .values(person_id=person_id)
+            sa.update(Face).where(Face.id.in_(face_ids)).values(person_id=person_id)
         )
         result = self.session.exec(statement)
         self.session.commit()

@@ -106,7 +106,9 @@ class PeopleRepository:
         )
 
     def face_belongs_to_person(self, *, face_id: UUID, person_id: UUID) -> bool:
-        statement = select(Face.id).where(Face.id == face_id, Face.person_id == person_id)
+        statement = select(Face.id).where(
+            Face.id == face_id, Face.person_id == person_id
+        )
         return self.session.exec(statement).first() is not None
 
     def update_person(self, person: Person) -> Person:
@@ -168,11 +170,15 @@ class PeopleRepository:
                 (
                     func.coalesce(Face.confidence, 0.0)
                     * func.greatest(
-                        func.coalesce(Face.bounding_box["width"].astext.cast(sa.Integer), 0),
+                        func.coalesce(
+                            Face.bounding_box["width"].astext.cast(sa.Integer), 0
+                        ),
                         0,
                     )
                     * func.greatest(
-                        func.coalesce(Face.bounding_box["height"].astext.cast(sa.Integer), 0),
+                        func.coalesce(
+                            Face.bounding_box["height"].astext.cast(sa.Integer), 0
+                        ),
                         0,
                     )
                 ).desc(),
@@ -276,13 +282,16 @@ class PeopleRepository:
         return list(self.session.exec(statement).all())
 
     def list_person_ids_for_asset(self, *, asset_id: UUID) -> list[UUID]:
-        statement = (
-            select(func.distinct(Face.person_id))
-            .where(Face.asset_id == asset_id, Face.person_id.is_not(None))
+        statement = select(func.distinct(Face.person_id)).where(
+            Face.asset_id == asset_id, Face.person_id.is_not(None)
         )
-        return [person_id for person_id in self.session.exec(statement).all() if person_id]
+        return [
+            person_id for person_id in self.session.exec(statement).all() if person_id
+        ]
 
-    def list_person_ids_without_active_assets(self, *, person_ids: list[UUID]) -> list[UUID]:
+    def list_person_ids_without_active_assets(
+        self, *, person_ids: list[UUID]
+    ) -> list[UUID]:
         if not person_ids:
             return []
         stats_subquery = self._person_stats_subquery()

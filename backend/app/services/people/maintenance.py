@@ -44,11 +44,15 @@ class PeopleMaintenanceService:
             seen.add(person_id)
             unique_person_ids.append(person_id)
         if not unique_person_ids:
-            return PeopleMaintenanceResult(deleted_person_ids=[], retained_person_ids=[])
+            return PeopleMaintenanceResult(
+                deleted_person_ids=[], retained_person_ids=[]
+            )
 
         people = self.repository.list_people_by_ids(unique_person_ids)
         if not people:
-            return PeopleMaintenanceResult(deleted_person_ids=[], retained_person_ids=[])
+            return PeopleMaintenanceResult(
+                deleted_person_ids=[], retained_person_ids=[]
+            )
 
         orphaned_ids = set(
             self.repository.list_person_ids_without_active_assets(

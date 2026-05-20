@@ -52,7 +52,9 @@ class SearchService:
             )
 
         if normalized:
-            model_id, query_embedding = self.embedding_service.embed_text_query(normalized)
+            model_id, query_embedding = self.embedding_service.embed_text_query(
+                normalized
+            )
             total = self.embedding_repository.count_searchable_assets(
                 model_id=model_id,
                 person_ids=validated_person_ids,

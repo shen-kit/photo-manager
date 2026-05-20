@@ -276,9 +276,12 @@ class FaceManagementService:
         self.session = session
         self.repository = repository or FaceRepository(session)
         self.thumbnail_service = thumbnail_service or PersonThumbnailService(session)
-        self.people_maintenance_service = people_maintenance_service or PeopleMaintenanceService(
-            session,
-            thumbnail_service=self.thumbnail_service,
+        self.people_maintenance_service = (
+            people_maintenance_service
+            or PeopleMaintenanceService(
+                session,
+                thumbnail_service=self.thumbnail_service,
+            )
         )
 
     def update_face(
@@ -296,9 +299,7 @@ class FaceManagementService:
 
         current_excluded = face.is_excluded
         assigned_person_id = person_id if person_id is not ... else face.person_id
-        resulting_excluded = (
-            is_excluded if is_excluded is not ... else current_excluded
-        )
+        resulting_excluded = is_excluded if is_excluded is not ... else current_excluded
 
         if person_id is not ... and person_id is not None:
             person = self.repository.get_person(person_id)

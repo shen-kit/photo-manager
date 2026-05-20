@@ -264,7 +264,9 @@ class Person(SQLModel, table=True):
         default=None,
         sa_column=Column(PGUUID(as_uuid=True), ForeignKey("faces.id"), nullable=True),
     )
-    thumbnail_path: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
+    thumbnail_path: str | None = Field(
+        default=None, sa_column=Column(Text, nullable=True)
+    )
     thumbnail_manually_set: bool = Field(
         default=False,
         sa_column=Column(Boolean, nullable=False, server_default="false"),
@@ -288,6 +290,16 @@ class Face(SQLModel, table=True):
             postgresql_with={"m": 16, "ef_construction": 64},
             postgresql_ops={"embedding": "vector_cosine_ops"},
             postgresql_where=text("embedding IS NOT NULL AND is_excluded = false"),
+        ),
+        Index(
+            "idx_faces_assigned_embedding_hnsw",
+            "embedding",
+            postgresql_using="hnsw",
+            postgresql_with={"m": 16, "ef_construction": 64},
+            postgresql_ops={"embedding": "vector_cosine_ops"},
+            postgresql_where=text(
+                "embedding IS NOT NULL AND is_excluded = false AND person_id IS NOT NULL"
+            ),
         ),
     )
 

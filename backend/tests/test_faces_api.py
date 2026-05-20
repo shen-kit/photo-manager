@@ -13,12 +13,17 @@ from starlette.requests import Request
 from app.api.v1.features.faces import (
     backfill_asset_faces,
     list_asset_faces,
+    match_asset_faces,
     process_asset_faces,
     update_face,
 )
 from app.core.auth import get_current_user
 from app.models import Face, Job, User
 from app.services.faces.schemas import FaceUpdateRequest
+from app.services.face_assignment.service import (
+    FaceAssignmentResult,
+    MatchedFaceAssignment,
+)
 from app.services.faces.service import FaceManagementServiceError
 
 
@@ -111,13 +116,14 @@ class FacesApiTest(unittest.TestCase):
             response = asyncio.run(
                 backfill_asset_faces(
                     force=True,
+                    auto_match=False,
                     job_service=job_service,
                     current_user=self.user,
                 )
             )
 
         self.assertEqual(response.id, job.id)
-        enqueue_mock.assert_awaited_once_with(job.id, force=True)
+        enqueue_mock.assert_awaited_once_with(job.id, force=True, auto_match=False)
 
     def test_process_asset_endpoint_enqueues_specific_asset(self) -> None:
         asset_id = uuid4()
@@ -139,6 +145,7 @@ class FacesApiTest(unittest.TestCase):
                 process_asset_faces(
                     asset_id=asset_id,
                     force=True,
+                    auto_match=True,
                     face_query_service=face_query_service,
                     job_service=job_service,
                     current_user=self.user,
@@ -149,9 +156,49 @@ class FacesApiTest(unittest.TestCase):
         self.assertEqual(job_service.created[0][0], "process_asset_faces")
         self.assertEqual(
             job_service.created[0][1],
-            {"asset_id": str(asset_id), "force": True},
+            {"asset_id": str(asset_id), "force": True, "auto_match": True},
         )
-        enqueue_mock.assert_awaited_once_with(asset_id, force=True, job_id=job.id)
+        enqueue_mock.assert_awaited_once_with(
+            asset_id,
+            force=True,
+            auto_match=True,
+            job_id=job.id,
+        )
+
+    def test_match_asset_faces_returns_summary_without_embeddings(self) -> None:
+        asset_id = uuid4()
+        matched_face_id = uuid4()
+        person_id = uuid4()
+        face_query_service = _FakeFaceQueryService()
+        result = FaceAssignmentResult(
+            asset_id=asset_id,
+            faces_seen=2,
+            faces_matched=1,
+            faces_unmatched=1,
+            assignments=[
+                MatchedFaceAssignment(
+                    face_id=matched_face_id,
+                    person_id=person_id,
+                    distance=0.21,
+                )
+            ],
+        )
+
+        with patch(
+            "app.api.v1.features.faces.FaceAssignmentService.assign_faces_for_asset",
+            return_value=result,
+        ) as match_mock:
+            response = match_asset_faces(
+                asset_id=asset_id,
+                face_query_service=face_query_service,
+                current_user=self.user,
+            )
+
+        match_mock.assert_called_once_with(asset_id)
+        payload = response.model_dump()
+        self.assertEqual(payload["faces_matched"], 1)
+        self.assertEqual(payload["assignments"][0]["person_id"], person_id)
+        self.assertNotIn("embedding", payload)
 
     def test_get_faces_hides_embeddings(self) -> None:
         asset_id = uuid4()
@@ -217,7 +264,9 @@ class FacesApiTest(unittest.TestCase):
         self.assertEqual(get_exc.exception.status_code, 404)
         self.assertEqual(process_exc.exception.status_code, 404)
 
-    def test_update_face_endpoint_hides_embeddings_and_returns_updated_face(self) -> None:
+    def test_update_face_endpoint_hides_embeddings_and_returns_updated_face(
+        self,
+    ) -> None:
         face = Face(
             id=uuid4(),
             asset_id=uuid4(),

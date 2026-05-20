@@ -86,7 +86,9 @@ class PersonThumbnailService:
                 )
             return self._clear_thumbnail(person=person, thumbnail_manually_set=False)
 
-        candidates = self.repository.list_thumbnail_candidates_for_person(person_id=person_id)
+        candidates = self.repository.list_thumbnail_candidates_for_person(
+            person_id=person_id
+        )
         candidate = self._select_best_candidate(candidates)
         if candidate is None:
             return self._clear_thumbnail(person=person, thumbnail_manually_set=False)

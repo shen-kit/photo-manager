@@ -36,7 +36,9 @@ class AssetServiceTest(unittest.TestCase):
 
         with (
             patch("app.services.assets.service.PeopleRepository") as repo_cls,
-            patch("app.services.assets.service.PeopleMaintenanceService") as maintenance_cls,
+            patch(
+                "app.services.assets.service.PeopleMaintenanceService"
+            ) as maintenance_cls,
         ):
             repo = repo_cls.return_value
             impacted_person_ids = [uuid4(), uuid4()]
@@ -48,7 +50,9 @@ class AssetServiceTest(unittest.TestCase):
         self.assertIsNotNone(asset.deleted_at)
         self.assertEqual(session.commit_count, 1)
         repo.list_person_ids_for_asset.assert_called_once_with(asset_id=asset.id)
-        maintenance.reconcile_people.assert_called_once_with(person_ids=impacted_person_ids)
+        maintenance.reconcile_people.assert_called_once_with(
+            person_ids=impacted_person_ids
+        )
 
 
 if __name__ == "__main__":

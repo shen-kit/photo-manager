@@ -7,10 +7,16 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from app.core.auth import get_current_user
 from app.models import Face, User
+from app.services.face_assignment.service import (
+    FaceAssignmentService,
+    FaceAssignmentServiceError,
+)
 from app.services.faces.query import FaceQueryService, get_face_query_service
 from app.services.faces.schemas import (
+    AssetFaceMatchRead,
     AssetFaceRead,
     FaceBoundingBoxRead,
+    FaceMatchAssignmentRead,
     FaceUpdateRequest,
 )
 from app.services.faces.service import FaceManagementService, FaceManagementServiceError
@@ -58,12 +64,17 @@ def _build_face_response(request: Request, face: Face) -> AssetFaceRead:
 )
 async def backfill_asset_faces(
     force: bool = Query(default=False),
+    auto_match: bool = Query(default=False),
     job_service: JobService = Depends(get_job_service),
     current_user: User = Depends(get_current_user),
 ) -> JobRead:
     del current_user
-    job_id, _ = create_backfill_job(force=force)
-    queued = await enqueue_missing_asset_faces_job(job_id, force=force)
+    job_id, _ = create_backfill_job(force=force, auto_match=auto_match)
+    queued = await enqueue_missing_asset_faces_job(
+        job_id,
+        force=force,
+        auto_match=auto_match,
+    )
     if not queued:
         job_service.fail_job(job_id, "Failed to enqueue face backfill job")
         raise HTTPException(
@@ -82,6 +93,7 @@ async def backfill_asset_faces(
 async def process_asset_faces(
     asset_id: UUID,
     force: bool = Query(default=False),
+    auto_match: bool = Query(default=True),
     face_query_service: FaceQueryService = Depends(get_face_query_service),
     job_service: JobService = Depends(get_job_service),
     current_user: User = Depends(get_current_user),
@@ -90,9 +102,18 @@ async def process_asset_faces(
     face_query_service.require_active_asset(asset_id)
     job = job_service.create_job(
         "process_asset_faces",
-        parameters={"asset_id": str(asset_id), "force": force},
+        parameters={
+            "asset_id": str(asset_id),
+            "force": force,
+            "auto_match": auto_match,
+        },
     )
-    queued = await enqueue_asset_faces_job(asset_id, force=force, job_id=job.id)
+    queued = await enqueue_asset_faces_job(
+        asset_id,
+        force=force,
+        auto_match=auto_match,
+        job_id=job.id,
+    )
     if not queued:
         job_service.fail_job(job.id, "Failed to enqueue asset face processing job")
         raise HTTPException(
@@ -100,6 +121,42 @@ async def process_asset_faces(
             detail="Failed to enqueue asset face processing job",
         )
     return JobRead.model_validate(job, from_attributes=True)
+
+
+@router.post(
+    "/assets/{asset_id}/faces/match",
+    response_model=AssetFaceMatchRead,
+)
+def match_asset_faces(
+    asset_id: UUID,
+    face_query_service: FaceQueryService = Depends(get_face_query_service),
+    current_user: User = Depends(get_current_user),
+) -> AssetFaceMatchRead:
+    del current_user
+    face_query_service.require_active_asset(asset_id)
+    try:
+        result = FaceAssignmentService(
+            face_query_service.session
+        ).assign_faces_for_asset(asset_id)
+    except FaceAssignmentServiceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    return AssetFaceMatchRead(
+        asset_id=result.asset_id,
+        faces_seen=result.faces_seen,
+        faces_matched=result.faces_matched,
+        faces_unmatched=result.faces_unmatched,
+        assignments=[
+            FaceMatchAssignmentRead(
+                face_id=assignment.face_id,
+                person_id=assignment.person_id,
+                distance=assignment.distance,
+            )
+            for assignment in result.assignments
+        ],
+    )
 
 
 @router.get(
@@ -135,6 +192,10 @@ def update_face(
     except FaceManagementServiceError as exc:
         detail = str(exc)
         if "not found" in detail.lower():
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail) from exc
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail) from exc
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail=detail
+            ) from exc
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=detail
+        ) from exc
     return _build_face_response(request, face)

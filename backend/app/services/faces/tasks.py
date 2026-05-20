@@ -7,6 +7,10 @@ from uuid import UUID
 from sqlmodel import Session
 
 from app.core.database import engine
+from app.services.face_assignment.service import (
+    FaceAssignmentService,
+    FaceAssignmentServiceError,
+)
 from app.services.faces.service import FaceProcessingService, FaceProcessingServiceError
 from app.services.jobs.service import JobService
 from app.services.notifications.service import NotificationService
@@ -33,13 +37,17 @@ class FaceBackfillStats:
         }
 
 
-def create_backfill_job(*, force: bool = False) -> tuple[UUID, int]:
+def create_backfill_job(
+    *,
+    force: bool = False,
+    auto_match: bool = False,
+) -> tuple[UUID, int]:
     with Session(engine) as session:
         face_service = FaceProcessingService(session)
         _, total = face_service.count_assets_pending_face_processing(force=force)
         job = JobService(session).create_job(
             "generate_missing_asset_faces",
-            parameters={"force": force},
+            parameters={"force": force, "auto_match": auto_match},
             progress_total=total,
         )
         return job.id, total
@@ -70,6 +78,7 @@ async def process_asset_faces(
     _: dict[str, object],
     asset_id: str,
     force: bool = False,
+    auto_match: bool = True,
     job_id: str | None = None,
 ) -> None:
     job_uuid = UUID(job_id) if job_id else None
@@ -83,7 +92,12 @@ async def process_asset_faces(
                 asset_uuid,
                 force=force,
             )
-        except FaceProcessingServiceError as exc:
+            assignment_result = None
+            if auto_match and result.processed:
+                assignment_result = FaceAssignmentService(
+                    session
+                ).assign_faces_for_asset(asset_uuid)
+        except (FaceProcessingServiceError, FaceAssignmentServiceError) as exc:
             logger.warning("Face processing failed for asset %s: %s", asset_uuid, exc)
             _mark_job_failed(
                 session=session,
@@ -101,9 +115,25 @@ async def process_asset_faces(
                     "model_id": result.model_id,
                     "processed": result.processed,
                     "skipped": result.skipped,
+                    "auto_match": auto_match,
                     "faces_created": result.faces_created,
                     "detected_faces": result.detected_faces,
                     "deleted_unconfirmed_faces": result.deleted_unconfirmed_faces,
+                    "faces_seen_for_matching": (
+                        assignment_result.faces_seen
+                        if assignment_result is not None
+                        else 0
+                    ),
+                    "faces_matched": (
+                        assignment_result.faces_matched
+                        if assignment_result is not None
+                        else 0
+                    ),
+                    "faces_unmatched": (
+                        assignment_result.faces_unmatched
+                        if assignment_result is not None
+                        else 0
+                    ),
                 },
                 message="Asset faces processed",
             )
@@ -113,6 +143,7 @@ async def generate_missing_asset_faces(
     _: dict[str, object],
     job_id: str,
     force: bool = False,
+    auto_match: bool = False,
 ) -> dict[str, int]:
     job_uuid = UUID(job_id)
     stats = FaceBackfillStats()
@@ -120,6 +151,7 @@ async def generate_missing_asset_faces(
         job_service = JobService(session)
         notification_service = NotificationService(session)
         face_service = FaceProcessingService(session)
+        assignment_service = FaceAssignmentService(session)
         _, asset_ids = face_service.list_asset_ids_pending_face_processing(force=force)
         stats = FaceBackfillStats(total=len(asset_ids))
         job_service.mark_running(job_uuid, message="Generating missing asset faces")
@@ -130,13 +162,19 @@ async def generate_missing_asset_faces(
             title="Face backfill started",
             message="Generating face detections for eligible image assets.",
             related_job_id=job_uuid,
-            details={"total": str(stats.total), "force": str(force)},
+            details={
+                "total": str(stats.total),
+                "force": str(force),
+                "auto_match": str(auto_match),
+            },
         )
 
         for index, asset_uuid in enumerate(asset_ids, start=1):
             try:
                 result = face_service.process_asset_faces(asset_uuid, force=force)
-            except FaceProcessingServiceError as exc:
+                if auto_match and result.processed:
+                    assignment_service.assign_faces_for_asset(asset_uuid)
+            except (FaceProcessingServiceError, FaceAssignmentServiceError) as exc:
                 logger.warning("Face backfill failed for asset %s: %s", asset_uuid, exc)
                 stats = FaceBackfillStats(
                     total=stats.total,

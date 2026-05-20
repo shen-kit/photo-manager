@@ -45,7 +45,15 @@ class _FakeEmbeddingRepository:
         self.count_calls.append((model_id, person_ids))
         return len(self.rows)
 
-    def search_similar_assets(self, *, model_id: int, query_embedding, limit: int, offset: int, person_ids=None):
+    def search_similar_assets(
+        self,
+        *,
+        model_id: int,
+        query_embedding,
+        limit: int,
+        offset: int,
+        person_ids=None,
+    ):
         self.search_calls.append((model_id, query_embedding, limit, offset, person_ids))
         return list(self.rows)
 

@@ -59,13 +59,16 @@ class PeopleApiTest(unittest.TestCase):
         job_service = _FakeJobService(job)
         payload = PeopleClusteringRequest(threshold=0.35, top_k=25, min_cluster_size=3)
 
-        with patch(
-            "app.api.v1.features.people.create_clustering_job",
-            return_value=job.id,
-        ), patch(
-            "app.api.v1.features.people.enqueue_face_clustering_job",
-            new=AsyncMock(return_value=True),
-        ) as enqueue_mock:
+        with (
+            patch(
+                "app.api.v1.features.people.create_clustering_job",
+                return_value=job.id,
+            ),
+            patch(
+                "app.api.v1.features.people.enqueue_face_clustering_job",
+                new=AsyncMock(return_value=True),
+            ) as enqueue_mock,
+        ):
             response = asyncio.run(
                 cluster_people(
                     payload=payload,

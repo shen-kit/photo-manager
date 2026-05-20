@@ -136,7 +136,10 @@ class PeopleService:
         person_id: UUID,
         page: int,
         page_size: int,
-    ) -> tuple[int, list[tuple[Asset, list[dict[str, Any]] | None, list[dict[str, Any]] | None]]]:
+    ) -> tuple[
+        int,
+        list[tuple[Asset, list[dict[str, Any]] | None, list[dict[str, Any]] | None]],
+    ]:
         self.get_person_detail(person_id)
         offset = (page - 1) * page_size
         total = self.repository.count_assets_for_person(person_id=person_id)
@@ -156,7 +159,11 @@ class PeopleService:
             seen.add(person_id)
             unique_person_ids.append(person_id)
         existing_ids = set(self.repository.list_existing_person_ids(unique_person_ids))
-        missing_ids = [person_id for person_id in unique_person_ids if person_id not in existing_ids]
+        missing_ids = [
+            person_id
+            for person_id in unique_person_ids
+            if person_id not in existing_ids
+        ]
         if missing_ids:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,

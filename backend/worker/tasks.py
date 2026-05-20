@@ -50,17 +50,19 @@ async def process_asset_faces(
     ctx: dict[str, object],
     asset_id: str,
     force: bool = False,
+    auto_match: bool = True,
     job_id: str | None = None,
 ) -> None:
-    await process_asset_faces_job(ctx, asset_id, force, job_id)
+    await process_asset_faces_job(ctx, asset_id, force, auto_match, job_id)
 
 
 async def generate_missing_asset_faces(
     ctx: dict[str, object],
     job_id: str,
     force: bool = False,
+    auto_match: bool = False,
 ) -> dict[str, int]:
-    return await generate_missing_asset_faces_job(ctx, job_id, force)
+    return await generate_missing_asset_faces_job(ctx, job_id, force, auto_match)
 
 
 async def cluster_faces(

@@ -332,7 +332,9 @@ class AssetService:
     def delete_asset(self, asset_id: UUID) -> None:
         asset = self._get_active_asset_or_404(asset_id)
         people_repository = PeopleRepository(self.session)
-        impacted_person_ids = people_repository.list_person_ids_for_asset(asset_id=asset.id)
+        impacted_person_ids = people_repository.list_person_ids_for_asset(
+            asset_id=asset.id
+        )
         asset.deleted_at = datetime.now(timezone.utc)
         self.session.add(asset)
         self.session.commit()

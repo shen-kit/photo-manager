@@ -29,6 +29,20 @@ class AssetFaceRead(SQLModel):
     updated_at: datetime
 
 
+class FaceMatchAssignmentRead(SQLModel):
+    face_id: UUID
+    person_id: UUID
+    distance: float
+
+
+class AssetFaceMatchRead(SQLModel):
+    asset_id: UUID
+    faces_seen: int
+    faces_matched: int
+    faces_unmatched: int
+    assignments: list[FaceMatchAssignmentRead]
+
+
 class FaceUpdateRequest(SQLModel):
     person_id: UUID | None = None
     is_confirmed: bool | None = None

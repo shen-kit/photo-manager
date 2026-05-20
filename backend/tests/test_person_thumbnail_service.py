@@ -133,7 +133,9 @@ class PersonThumbnailServiceTest(unittest.TestCase):
 
     def test_stable_thumbnail_path_is_overwritten(self) -> None:
         person = self._person()
-        first_face = self._candidate(confidence=0.6, width=20, height=20, master_path="first.jpg")
+        first_face = self._candidate(
+            confidence=0.6, width=20, height=20, master_path="first.jpg"
+        )
         second_face = self._candidate(
             confidence=0.7,
             width=30,
@@ -150,7 +152,9 @@ class PersonThumbnailServiceTest(unittest.TestCase):
                 session=None,
                 repository=repository,
                 processed_dir=Path(temp_dir),
-                image_loader=lambda path: Image.new("RGB", (120, 120), color=colors[path.name]),
+                image_loader=lambda path: Image.new(
+                    "RGB", (120, 120), color=colors[path.name]
+                ),
             )
 
             first_result = service.set_manual_thumbnail(
