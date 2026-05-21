@@ -24,6 +24,7 @@ from app.services.assets.media import (
 )
 from app.services.assets.preview import AssetPreviewService
 from app.services.assets.preview import IMAGE_PREVIEW_TASK, VIDEO_PREVIEW_TASK
+from app.services.assets.timeline import apply_asset_timeline_fields
 from app.services.jobs.context import JobNotification, JobTaskContext
 from app.services.jobs.queue import enqueue_asset_embedding_job, enqueue_asset_faces_job
 from app.services.notifications.types import NotificationCategory, NotificationLevel
@@ -121,6 +122,7 @@ async def process_asset_metadata(
                     and parsed_captured_at_local is not None
                 ):
                     asset.captured_at_local = parsed_captured_at_local
+            apply_asset_timeline_fields(asset)
             session.add(asset)
             session.commit()
             thumbnail_processor.ensure_asset_thumbnails(asset.id)
@@ -189,7 +191,9 @@ async def generate_asset_preview(
     _: dict[str, object],
     asset_id: str,
     job_id: str | None = None,
+    priority: str = "low",
 ) -> None:
+    del priority
     asset_uuid = UUID(asset_id)
     job_uuid = UUID(job_id) if job_id else None
     with Session(engine) as session:

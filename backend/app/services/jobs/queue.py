@@ -55,10 +55,12 @@ async def enqueue_asset_preview_job(
     asset_id: UUID,
     *,
     job_id: UUID | None = None,
+    priority: str = "low",
 ) -> bool:
     args: list[object] = [str(asset_id)]
     if job_id is not None:
         args.append(str(job_id))
+    args.append(priority)
     return await enqueue_worker_job(GENERATE_ASSET_PREVIEW_JOB_NAME, *args)
 
 

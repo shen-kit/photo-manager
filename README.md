@@ -1,6 +1,6 @@
 # Photo Manager
 
-Self-hosted photo and video management with a database-first design, derived previews, semantic search, face recognition, people management, and soft-delete trash flows.
+Self-hosted photo and video management with a database-first design, cursor-based browsing, timeline navigation, derived previews, semantic search, face recognition, people management, and soft-delete trash flows.
 
 ## Overview
 
@@ -13,6 +13,8 @@ Self-hosted photo and video management with a database-first design, derived pre
   - Asset upload and path-based ingest.
   - Bulk library scan from the originals directory.
   - Metadata-first ingestion with eager tiny/small thumbnails.
+  - Cursor-based active asset browsing for large libraries.
+  - Timeline month/day APIs for jump-to-date scrolling.
   - On-demand preview generation through a combined asset preview endpoint.
   - CLIP-based semantic search.
   - InsightFace face detection and face embedding storage.
@@ -158,7 +160,7 @@ The schema is defined in [backend/app/models.py](backend/app/models.py) and migr
 
 | Table | Purpose | Important fields |
 | --- | --- | --- |
-| `assets` | Primary media metadata | `id`, `file_hash`, `master_path`, `mime_type`, `captured_at`, `search_vector`, `search_model_id`, `deleted_at`, `preview_status` |
+| `assets` | Primary media metadata and browse fields | `id`, `file_hash`, `master_path`, `mime_type`, `captured_at`, `captured_at_local`, `timeline_at`, `timeline_day`, `timeline_month`, `media_kind`, `search_vector`, `search_model_id`, `deleted_at`, `preview_status` |
 | `asset_processing` | Shared processing state for AI and preview tasks | `asset_id`, `ai_model_id`, `task`, `status`, `last_job_id`, `processed_at`, `error_message` |
 | `faces` | Detected faces and face embeddings | `asset_id`, `person_id`, `embedding`, `face_model_id`, `bounding_box`, `confidence`, `is_confirmed`, `is_excluded`, `crop_path` |
 | `people` | Named or unnamed person clusters | `name`, `thumbnail_face_id`, `thumbnail_path`, `thumbnail_manually_set`, `is_hidden` |
@@ -192,6 +194,10 @@ The schema is defined in [backend/app/models.py](backend/app/models.py) and migr
 - Soft delete:
   - `assets.deleted_at IS NULL` means active.
   - `assets.deleted_at IS NOT NULL` means trashed.
+- Timeline materialization:
+  - `timeline_at` is the effective browse timestamp.
+  - `timeline_day` and `timeline_month` are lightweight derived browse buckets.
+  - `captured_at_local` stays as the raw local EXIF timestamp string so local calendar grouping remains regeneratable.
 
 ### Extensions and indexes
 
@@ -204,8 +210,13 @@ The schema is defined in [backend/app/models.py](backend/app/models.py) and migr
   - partial assigned-face HNSW index on `faces.embedding` where `person_id IS NOT NULL AND is_excluded = false` for incremental matching
 - Other notable indexes:
   - `idx_assets_captured_at`
+  - `idx_assets_active_timeline_desc`
+  - `idx_assets_active_month_timeline_desc`
+  - `idx_assets_active_day_timeline_desc`
+  - `idx_assets_active_media_timeline_desc`
   - `idx_faces_asset_id`
   - `idx_faces_person_id`
+  - `idx_faces_person_asset_active`
   - `idx_faces_face_model_id`
   - `idx_tags_path_gist`
 
@@ -295,6 +306,7 @@ The schema is defined in [backend/app/models.py](backend/app/models.py) and migr
 5. When metadata processing completes it can enqueue:
    - CLIP embedding generation
    - face processing for images
+6. Timeline browse fields are recomputed whenever metadata changes.
 
 ### Preview generation
 
@@ -310,6 +322,22 @@ The schema is defined in [backend/app/models.py](backend/app/models.py) and migr
    - image preview generation
    - video preview generation/transcoding
 
+### Active browsing and timeline
+
+1. `GET /api/v1/assets` is the canonical active asset feed.
+2. It uses cursor pagination rather than deep offset pagination.
+3. Ordering is stable for large libraries:
+   - `timeline_at DESC`
+   - `id DESC`
+4. Optional filters include:
+   - `media_kind`
+   - `month`
+   - `day`
+   - `person_ids`
+5. `GET /api/v1/timeline/months` returns month buckets for scrollbar/jump navigation.
+6. `GET /api/v1/timeline/days?month=YYYY-MM-01` returns day buckets within a month.
+7. Grid/search responses are intentionally lightweight and do not include heavy tag/face hydration.
+
 ### CLIP embedding and search
 
 1. The current CLIP default model is read from `ai_model_defaults`.
@@ -317,6 +345,7 @@ The schema is defined in [backend/app/models.py](backend/app/models.py) and migr
 3. `generate_for_asset()` stores the vector on `assets.search_vector` and records the model in `assets.search_model_id`.
 4. `GET /api/v1/search` embeds the text query with the current default CLIP model.
 5. Search returns active assets only, optionally filtered by person IDs.
+6. Search now uses cursor pagination instead of offset pagination.
 
 ### Face detection
 
@@ -367,6 +396,7 @@ Used after new face detection and after restore follow-up when current-model fac
 - Naming or hiding a person updates the `people` row directly.
 - Manual face assignment is done by patching a face.
 - Merging people reassigns faces from source to target, deletes the source person, and refreshes thumbnails.
+- People-filtered asset browsing now goes through `GET /api/v1/assets?person_ids=...` instead of a dedicated per-person asset list route.
 - Person thumbnails:
   - can be automatically selected from the best face candidate
   - can be manually set from a specific asset
@@ -565,7 +595,22 @@ Examples assume you already have a bearer token in `$TOKEN`.
 List active assets:
 
 ```bash
-curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/api/v1/assets/
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8000/api/v1/assets?limit=100"
+```
+
+List active assets for one month:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8000/api/v1/assets?month=2024-05-01&limit=100"
+```
+
+List timeline month buckets:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8000/api/v1/timeline/months"
 ```
 
 Scan the originals library:
@@ -662,10 +707,11 @@ Important route groups:
 | Area | Routes |
 | --- | --- |
 | Auth | `/api/v1/auth/register`, `/login`, `/refresh`, `/logout`, `/me` |
-| Assets | `/api/v1/assets/upload`, `/ingest`, `GET /api/v1/assets`, `GET/PATCH/DELETE /api/v1/assets/{asset_id}` |
+| Assets | `/api/v1/assets/upload`, `/ingest`, `GET /api/v1/assets`, `GET/PATCH/DELETE /api/v1/assets/{asset_id}`, `GET /api/v1/assets/{asset_id}/preview` |
+| Timeline | `GET /api/v1/timeline/months`, `GET /api/v1/timeline/days` |
 | Search | `GET /api/v1/search` |
 | Faces | `POST /api/v1/assets/{asset_id}/faces/process`, `POST /api/v1/assets/{asset_id}/faces/match`, `GET /api/v1/assets/{asset_id}/faces`, `PATCH /api/v1/faces/{face_id}` |
-| People | `GET /api/v1/people`, `GET/PATCH /api/v1/people/{person_id}`, `PATCH /api/v1/people/{person_id}/thumbnail`, `GET /api/v1/people/{person_id}/assets`, `POST /api/v1/people/{source_person_id}/merge-into/{target_person_id}` |
+| People | `GET /api/v1/people`, `GET/PATCH /api/v1/people/{person_id}`, `PATCH /api/v1/people/{person_id}/thumbnail`, `POST /api/v1/people/{source_person_id}/merge-into/{target_person_id}` |
 | Trash | `GET /api/v1/trash/assets`, `GET /api/v1/trash/assets/{asset_id}`, `POST /api/v1/trash/assets/{asset_id}/restore`, `POST /api/v1/trash/assets/restore` |
 | Jobs | `GET /api/v1/jobs/available`, `POST /api/v1/jobs/{job_key}/run`, `GET /api/v1/jobs`, `GET /api/v1/jobs/{job_id}` |
 | Notifications | `GET /api/v1/notifications`, `POST /api/v1/notifications/{notification_id}/read`, `POST /api/v1/notifications/read-all`, `DELETE /api/v1/notifications/{notification_id}`, `DELETE /api/v1/notifications` |
@@ -682,6 +728,7 @@ Important route groups:
 ### Derived data assumptions
 
 - Generated thumbnails, previews, and people thumbnails are disposable.
+- Timeline browse fields are disposable and regeneratable from asset metadata.
 - Originals and DB metadata are the durable state.
 - Missing derived files can be regenerated by normal processing or restore follow-up logic.
 

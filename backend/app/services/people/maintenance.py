@@ -69,6 +69,9 @@ class PeopleMaintenanceService:
         for thumbnail_path in deleted_thumbnail_paths:
             self.thumbnail_service.delete_thumbnail_file(thumbnail_path)
 
+        retained_person_ids = self.repository.list_existing_person_ids(
+            retained_person_ids
+        )
         if refresh_thumbnails:
             for person_id in retained_person_ids:
                 self.thumbnail_service.ensure_thumbnail(person_id=person_id)

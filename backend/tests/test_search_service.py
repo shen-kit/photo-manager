@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import json
 import sys
 import unittest
 from datetime import datetime, timezone
@@ -51,18 +53,39 @@ class _FakeEmbeddingRepository:
         model_id: int,
         query_embedding,
         limit: int,
-        offset: int,
+        cursor_distance=None,
+        cursor_timeline_at=None,
+        cursor_asset_id=None,
         person_ids=None,
     ):
-        self.search_calls.append((model_id, query_embedding, limit, offset, person_ids))
+        self.search_calls.append(
+            (
+                model_id,
+                query_embedding,
+                limit,
+                cursor_distance,
+                cursor_timeline_at,
+                cursor_asset_id,
+                person_ids,
+            )
+        )
         return list(self.rows)
 
     def count_assets_for_people(self, *, person_ids):
         self.people_count_calls.append(person_ids)
         return len(self.rows)
 
-    def list_assets_for_people(self, *, person_ids, limit: int, offset: int):
-        self.people_list_calls.append((person_ids, limit, offset))
+    def list_assets_for_people(
+        self,
+        *,
+        person_ids,
+        limit: int,
+        cursor_timeline_at=None,
+        cursor_asset_id=None,
+    ):
+        self.people_list_calls.append(
+            (person_ids, limit, cursor_timeline_at, cursor_asset_id)
+        )
         return list(self.rows)
 
 
@@ -85,7 +108,7 @@ def _row() -> AssetEmbeddingSearchRow:
         has_large_preview=False,
         created_at=datetime.now(timezone.utc),
     )
-    return AssetEmbeddingSearchRow(asset=asset, tags=None, faces=None, distance=0.25)
+    return AssetEmbeddingSearchRow(asset=asset, distance=0.25)
 
 
 class SearchServiceTest(unittest.TestCase):
@@ -101,12 +124,16 @@ class SearchServiceTest(unittest.TestCase):
             people_service=_FakePeopleService(person_ids),
         )
 
-        result = service.search(query=None, limit=10, offset=0, person_ids=person_ids)
+        result = service.search(
+            query=None, limit=10, cursor=None, person_ids=person_ids
+        )
 
         self.assertEqual(result.query, "")
         self.assertEqual(embedding_service.calls, [])
-        self.assertEqual(embedding_repository.people_count_calls, [person_ids])
-        self.assertEqual(embedding_repository.people_list_calls, [(person_ids, 10, 0)])
+        self.assertEqual(
+            embedding_repository.people_list_calls,
+            [(person_ids, 11, None, None)],
+        )
 
     def test_text_search_with_people_filters_passes_validated_ids(self) -> None:
         rows = [_row()]
@@ -125,17 +152,16 @@ class SearchServiceTest(unittest.TestCase):
         result = service.search(
             query="beach",
             limit=25,
-            offset=5,
+            cursor=None,
             person_ids=requested_ids,
         )
 
         self.assertEqual(result.query, "beach")
         self.assertEqual(embedding_service.calls, ["beach"])
         self.assertEqual(people_service.calls, [requested_ids])
-        self.assertEqual(embedding_repository.count_calls, [(11, validated_ids)])
         self.assertEqual(
             embedding_repository.search_calls,
-            [(11, [0.1, 0.2], 25, 5, validated_ids)],
+            [(11, [0.1, 0.2], 26, None, None, None, validated_ids)],
         )
 
     def test_requires_query_or_people_filter(self) -> None:
@@ -147,7 +173,29 @@ class SearchServiceTest(unittest.TestCase):
         )
 
         with self.assertRaises(RuntimeError):
-            service.search(query=None, limit=10, offset=0, person_ids=[])
+            service.search(query=None, limit=10, cursor=None, person_ids=[])
+
+    def test_cursor_scope_mismatch_is_rejected(self) -> None:
+        rows = [_row()]
+        service = SearchService(
+            session=None,
+            embedding_service=_FakeEmbeddingService(),
+            embedding_repository=_FakeEmbeddingRepository(rows),
+            people_service=_FakePeopleService([]),
+        )
+        payload = {
+            "v": 1,
+            "scope": "wrong",
+            "distance": 0.25,
+            "timeline_at": rows[0].asset.timeline_at.isoformat(),
+            "asset_id": str(rows[0].asset.id),
+        }
+        cursor = base64.urlsafe_b64encode(json.dumps(payload).encode("utf-8")).decode(
+            "utf-8"
+        )
+
+        with self.assertRaises(Exception):
+            service.search(query="beach", limit=10, cursor=cursor, person_ids=[])
 
 
 if __name__ == "__main__":

@@ -14,11 +14,8 @@ from app.services.embeddings.service import (
     SEARCH_MAX_LIMIT,
 )
 from app.services.search.schemas import (
-    SearchFaceSummary,
-    SearchPersonSummary,
     SearchResponse,
     SearchResultItem,
-    SearchTagSummary,
 )
 from app.services.search.service import SearchService
 
@@ -50,26 +47,6 @@ def _thumbnail_url(request: Request, asset_id: UUID) -> str:
     )
 
 
-def _build_tag_models(rows: list[dict[str, object]] | None) -> list[SearchTagSummary]:
-    return [SearchTagSummary.model_validate(row) for row in (rows or [])]
-
-
-def _build_face_models(rows: list[dict[str, object]] | None) -> list[SearchFaceSummary]:
-    items: list[SearchFaceSummary] = []
-    for row in rows or []:
-        person_id = row.get("person_id")
-        person_name = row.get("person_name")
-        items.append(
-            SearchFaceSummary(
-                id=row["id"],
-                person=SearchPersonSummary(id=person_id, name=person_name)
-                if person_id or person_name
-                else None,
-            )
-        )
-    return items
-
-
 @router.get("", response_model=SearchResponse, include_in_schema=False)
 @router.get("/", response_model=SearchResponse)
 def search_assets(
@@ -77,7 +54,7 @@ def search_assets(
     query: str | None = Query(default=None),
     person_ids: str | None = Query(default=None),
     limit: int = Query(default=SEARCH_DEFAULT_LIMIT, ge=1, le=SEARCH_MAX_LIMIT),
-    offset: int = Query(default=0, ge=0),
+    cursor: str | None = Query(default=None),
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> SearchResponse:
@@ -87,7 +64,7 @@ def search_assets(
         results = SearchService(session).search(
             query=query,
             limit=limit,
-            offset=offset,
+            cursor=cursor,
             person_ids=parsed_person_ids,
         )
     except EmbeddingServiceError as exc:
@@ -99,25 +76,25 @@ def search_assets(
     items = [
         SearchResultItem(
             id=row.asset.id,
+            mime_type=row.asset.mime_type,
+            media_kind=row.asset.media_kind,
             captured_at=row.asset.captured_at,
-            description=row.asset.description,
+            timeline_day=row.asset.timeline_day,
             is_favorite=row.asset.is_favorite,
             width=row.asset.width,
             height=row.asset.height,
+            duration_seconds=row.asset.duration_seconds,
             has_large_preview=row.asset.has_large_preview,
             small_thumbnail_url=_thumbnail_url(request, row.asset.id),
             blurhash=row.asset.blurhash,
             distance=row.distance,
             score=max(0.0, 1.0 - row.distance),
-            tags=_build_tag_models(row.tags),
-            faces=_build_face_models(row.faces),
         )
         for row in results.items
     ]
     return SearchResponse(
         items=items,
         query=results.query,
-        limit=results.limit,
-        offset=results.offset,
-        total=results.total,
+        next_cursor=results.next_cursor,
+        has_more=results.has_more,
     )

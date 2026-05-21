@@ -45,6 +45,7 @@ from app.services.jobs.queue import enqueue_asset_processing_job
 from app.services.jobs.service import JobService
 from app.services.notifications.service import NotificationService
 from app.services.notifications.types import NotificationCategory, NotificationLevel
+from app.services.assets.timeline import apply_asset_timeline_fields
 from app.services.people.maintenance import PeopleMaintenanceService
 from app.services.people.repository import PeopleRepository
 
@@ -58,7 +59,6 @@ class AssetProcessResult:
     created_new: bool
 
 
-@dataclass(frozen=True)
 def _generate_fast_artifacts(
     asset_id: UUID, original_path: Path, include_small: bool
 ) -> None:
@@ -232,34 +232,6 @@ class AssetService:
     ) -> AssetProcessResult:
         return await self.process_new_asset(file_path, user_id, restore_deleted=True)
 
-    def list_assets(
-        self, *, page: int, page_size: int
-    ) -> tuple[
-        int,
-        list[tuple[Asset, list[dict[str, Any]] | None, list[dict[str, Any]] | None]],
-    ]:
-        tags_subquery, faces_subquery = self._asset_relations_subqueries()
-        total = self.session.exec(
-            select(func.count()).select_from(Asset).where(active_asset_where())
-        ).one()
-        offset = (page - 1) * page_size
-
-        statement = (
-            select(
-                Asset,
-                tags_subquery.c.tags,
-                faces_subquery.c.faces,
-            )
-            .where(active_asset_where())
-            .outerjoin(tags_subquery, tags_subquery.c.asset_id == Asset.id)
-            .outerjoin(faces_subquery, faces_subquery.c.asset_id == Asset.id)
-            .order_by(Asset.captured_at.desc().nullslast(), Asset.created_at.desc())
-            .offset(offset)
-            .limit(page_size)
-        )
-        rows = self.session.exec(statement).all()
-        return total, rows
-
     def get_asset_detail(
         self, asset_id: UUID
     ) -> tuple[Asset, list[dict[str, Any]] | None, list[dict[str, Any]] | None]:
@@ -287,6 +259,7 @@ class AssetService:
         asset = self._get_active_asset_or_404(asset_id)
         for field_name, value in updates.items():
             setattr(asset, field_name, value)
+        apply_asset_timeline_fields(asset)
         self.session.add(asset)
         self.session.commit()
         return self.get_asset_detail(asset_id)
@@ -373,6 +346,7 @@ class AssetService:
             else None,
             preview_status=VIDEO_PREVIEW_STATUS_PENDING if video_metadata else None,
         )
+        apply_asset_timeline_fields(asset)
         self.session.add(asset)
         try:
             self.session.commit()
@@ -590,6 +564,7 @@ class AssetService:
         )
         asset.preview_status = VIDEO_PREVIEW_STATUS_PENDING if video_metadata else None
         asset.deleted_at = None
+        apply_asset_timeline_fields(asset)
         self.session.add(asset)
         self.session.commit()
         self.session.refresh(asset)

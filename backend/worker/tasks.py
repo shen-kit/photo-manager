@@ -28,6 +28,13 @@ from app.core.database import engine
 from sqlmodel import Session
 
 
+def _notify_manual_job_child_terminal(job_id: str | None) -> None:
+    if job_id is None:
+        return
+    with Session(engine) as session:
+        ManualJobService(session).on_child_job_terminal(UUID(job_id))
+
+
 async def process_asset_metadata(
     ctx: dict[str, object],
     asset_id: str,
@@ -36,14 +43,17 @@ async def process_asset_metadata(
     enqueue_embedding: bool = True,
     enqueue_faces: bool = True,
 ) -> None:
-    await process_asset_metadata_job(
-        ctx,
-        asset_id,
-        job_id,
-        parent_job_id,
-        enqueue_embedding,
-        enqueue_faces,
-    )
+    try:
+        await process_asset_metadata_job(
+            ctx,
+            asset_id,
+            job_id,
+            parent_job_id,
+            enqueue_embedding,
+            enqueue_faces,
+        )
+    finally:
+        _notify_manual_job_child_terminal(job_id)
 
 
 async def generate_asset_clip_embedding(
@@ -52,7 +62,10 @@ async def generate_asset_clip_embedding(
     force: bool = False,
     job_id: str | None = None,
 ) -> None:
-    await generate_asset_clip_embedding_job(ctx, asset_id, force, job_id)
+    try:
+        await generate_asset_clip_embedding_job(ctx, asset_id, force, job_id)
+    finally:
+        _notify_manual_job_child_terminal(job_id)
 
 
 async def generate_asset_clip_embedding_batch(
@@ -60,7 +73,11 @@ async def generate_asset_clip_embedding_batch(
     items: list[dict[str, str | None]],
     force: bool = False,
 ) -> None:
-    await generate_asset_clip_embedding_batch_job(ctx, items, force)
+    try:
+        await generate_asset_clip_embedding_batch_job(ctx, items, force)
+    finally:
+        for item in items:
+            _notify_manual_job_child_terminal(item.get("job_id"))
 
 
 async def process_asset_faces(
@@ -70,7 +87,10 @@ async def process_asset_faces(
     auto_match: bool = True,
     job_id: str | None = None,
 ) -> None:
-    await process_asset_faces_job(ctx, asset_id, force, auto_match, job_id)
+    try:
+        await process_asset_faces_job(ctx, asset_id, force, auto_match, job_id)
+    finally:
+        _notify_manual_job_child_terminal(job_id)
 
 
 async def process_asset_faces_batch(
@@ -79,22 +99,34 @@ async def process_asset_faces_batch(
     force: bool = False,
     auto_match: bool = True,
 ) -> None:
-    await process_asset_faces_batch_job(ctx, items, force, auto_match)
+    try:
+        await process_asset_faces_batch_job(ctx, items, force, auto_match)
+    finally:
+        for item in items:
+            _notify_manual_job_child_terminal(item.get("job_id"))
 
 
 async def process_asset_thumbnail_batch(
     ctx: dict[str, object],
     items: list[dict[str, str | None]],
 ) -> None:
-    await process_asset_thumbnail_batch_job(ctx, items)
+    try:
+        await process_asset_thumbnail_batch_job(ctx, items)
+    finally:
+        for item in items:
+            _notify_manual_job_child_terminal(item.get("job_id"))
 
 
 async def generate_asset_preview(
     ctx: dict[str, object],
     asset_id: str,
     job_id: str | None = None,
+    priority: str = "low",
 ) -> None:
-    await generate_asset_preview_job(ctx, asset_id, job_id)
+    try:
+        await generate_asset_preview_job(ctx, asset_id, job_id, priority)
+    finally:
+        _notify_manual_job_child_terminal(job_id)
 
 
 async def run_manual_job(

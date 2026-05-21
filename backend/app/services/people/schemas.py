@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime
 from uuid import UUID
 
-from sqlmodel import Field, SQLModel
+from sqlmodel import SQLModel
 
 
 class PersonSummary(SQLModel):
@@ -42,27 +41,6 @@ class PersonUpdateRequest(SQLModel):
 
 class PersonThumbnailUpdateRequest(SQLModel):
     asset_id: UUID
-
-
-class PersonAssetItem(SQLModel):
-    id: UUID
-    captured_at: datetime | None = None
-    description: str | None = None
-    is_favorite: bool
-    width: int | None = None
-    height: int | None = None
-    has_large_preview: bool
-    small_thumbnail_url: str
-    blurhash: str | None = None
-    tags: list[TagSummary] = Field(default_factory=list)
-    faces: list[FaceSummary] = Field(default_factory=list)
-
-
-class PersonAssetListResponse(SQLModel):
-    items: list[PersonAssetItem]
-    page: int
-    page_size: int
-    total: int
 
 
 class PersonMergeResponse(SQLModel):

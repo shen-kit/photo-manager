@@ -30,6 +30,18 @@ class _FakeSession:
     def commit(self) -> None:
         self.commit_count += 1
 
+    def exec(self, statement):
+        del statement
+
+        class _Result:
+            def __init__(self, asset: Asset) -> None:
+                self._asset = asset
+
+            def all(self):
+                return [self._asset]
+
+        return _Result(self.asset)
+
 
 class AssetPreviewServiceTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -62,26 +74,25 @@ class AssetPreviewServiceTest(unittest.TestCase):
 
         response = _build_detail_response(self.request, asset, [], [])
 
-        self.assertTrue(
-            response.preview_url.endswith(f"/api/v1/assets/{asset.id}/preview")
-        )
+        self.assertTrue(response.preview_url.endswith("/media/originals/2024/test.jpg"))
 
-    def test_small_image_preview_uses_original_file(self) -> None:
+    def test_small_image_preview_is_ready_with_original_url(self) -> None:
         asset = self._asset(has_large_preview=False)
         session = _FakeSession(asset)
         service = AssetPreviewService(session)
 
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            image_path = Path(tmp_dir) / "photo.jpg"
-            image_path.write_bytes(b"stub")
-            with patch(
-                "app.services.assets.preview.master_path_to_source_path",
-                return_value=image_path,
-            ):
-                resolution = self._run_async(service.resolve_preview(asset.id))
+        items = self._run_async(
+            service.ensure_previews(
+                asset_ids=[asset.id],
+                base_url="http://testserver/",
+                priority="low",
+            )
+        )
 
-        self.assertFalse(resolution.queued)
-        self.assertEqual(resolution.file_path, image_path)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].status, "ready")
+        self.assertTrue(items[0].preview_url.endswith("/media/originals/2024/test.jpg"))
+        self.assertIsNone(items[0].job_id)
 
     def test_video_preview_uses_existing_transcoded_file(self) -> None:
         asset = self._asset(mime_type="video/mp4")
@@ -95,11 +106,38 @@ class AssetPreviewServiceTest(unittest.TestCase):
                 "app.services.assets.preview.processed_video_preview_path",
                 return_value=preview_path,
             ):
-                resolution = self._run_async(service.resolve_preview(asset.id))
+                items = self._run_async(
+                    service.ensure_previews(
+                        asset_ids=[asset.id],
+                        base_url="http://testserver/",
+                        priority="low",
+                    )
+                )
 
-        self.assertFalse(resolution.queued)
-        self.assertEqual(resolution.file_path, preview_path)
+        self.assertEqual(items[0].status, "ready")
+        self.assertTrue(
+            items[0].preview_url.endswith(
+                f"/media/processed/assets/{asset.id}/preview.mp4"
+            )
+        )
         self.assertEqual(asset.preview_status, "ready")
+
+    def test_missing_asset_returns_not_found_status(self) -> None:
+        asset = self._asset()
+        session = _FakeSession(asset)
+        service = AssetPreviewService(session)
+
+        with patch.object(service, "_list_assets_by_ids", return_value={}):
+            items = self._run_async(
+                service.ensure_previews(
+                    asset_ids=[uuid4()],
+                    base_url="http://testserver/",
+                    priority="low",
+                )
+            )
+
+        self.assertEqual(items[0].status, "not_found")
+        self.assertIsNone(items[0].preview_url)
 
     @staticmethod
     def _run_async(awaitable):

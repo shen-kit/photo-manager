@@ -1,15 +1,10 @@
-from .service import (
-    AssetProcessResult,
-    AssetService,
-    get_asset_service,
-)
-from .repository import AssetRepository, active_asset_where, deleted_asset_where
+"""Asset service package.
 
-__all__ = [
-    "AssetProcessResult",
-    "AssetRepository",
-    "AssetService",
-    "active_asset_where",
-    "deleted_asset_where",
-    "get_asset_service",
-]
+Keep this package initializer intentionally empty.
+
+Importing an asset submodule should not eagerly load unrelated runtime modules like
+asset ingestion services, browse services, or repositories. Several worker task
+modules import specific asset submodules (for example `assets.batching`), and eager
+re-exports here widen the import graph enough to create circular-import risks during
+process startup.
+"""

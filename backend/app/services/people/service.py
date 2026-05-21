@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, status
 from sqlmodel import Session
 
 from app.core.database import get_session
-from app.models import Asset, Person
+from app.models import Person
 from app.services.people.repository import PeopleRepository, PersonReadRow
 from app.services.people.thumbnails import (
     PersonThumbnailService,
@@ -129,26 +128,6 @@ class PeopleService:
             )
             raise HTTPException(status_code=status_code, detail=detail) from exc
         return self.get_person_detail(person_id)
-
-    def list_assets_for_person(
-        self,
-        *,
-        person_id: UUID,
-        page: int,
-        page_size: int,
-    ) -> tuple[
-        int,
-        list[tuple[Asset, list[dict[str, Any]] | None, list[dict[str, Any]] | None]],
-    ]:
-        self.get_person_detail(person_id)
-        offset = (page - 1) * page_size
-        total = self.repository.count_assets_for_person(person_id=person_id)
-        rows = self.repository.list_assets_for_person(
-            person_id=person_id,
-            limit=page_size,
-            offset=offset,
-        )
-        return total, rows
 
     def validate_person_ids(self, person_ids: list[UUID]) -> list[UUID]:
         unique_person_ids: list[UUID] = []

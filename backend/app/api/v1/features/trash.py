@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from app.core.auth import get_current_user
 from app.models import Asset, User
-from app.api.v1.features.assets.router import _preview_url, _thumbnail_url
+from app.services.assets.urls import build_preview_url, build_thumbnail_url
 from app.services.trash.schemas import (
     RestoredAssetDetailResponse,
     TrashAssetDetailResponse,
@@ -30,6 +30,14 @@ from app.services.trash.service import (
 )
 
 router = APIRouter()
+
+
+def _thumbnail_url(request: Request, asset_id: UUID, variant: str) -> str:
+    return build_thumbnail_url(str(request.base_url), asset_id, variant)
+
+
+def _preview_url(request: Request, asset: Asset) -> str:
+    return build_preview_url(str(request.base_url), asset)
 
 
 def _build_tag_models(rows: list[dict[str, Any]] | None) -> list[TrashTagSummary]:

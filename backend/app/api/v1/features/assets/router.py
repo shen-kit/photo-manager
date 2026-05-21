@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 from uuid import UUID
 
@@ -9,24 +9,54 @@ from fastapi import (
     Depends,
     File,
     HTTPException,
+    Query,
     Request,
     Response,
     UploadFile,
     status,
 )
-from fastapi.responses import FileResponse, JSONResponse
 from sqlmodel import Field, SQLModel
 
 from app.core.auth import get_current_user
 from app.models import Asset, User
-from app.services.assets.preview import AssetPreviewService
+from app.services.assets.browse import (
+    DEFAULT_GRID_LIMIT,
+    AssetBrowseService,
+    AssetGridFilters,
+    AssetGridRow,
+    get_asset_browse_service,
+)
+from app.services.assets.preview import AssetPreviewService, normalize_preview_priority
 from app.services.assets.service import AssetService, get_asset_service
+from app.services.assets.urls import build_preview_url, build_thumbnail_url
+from app.services.people.service import PeopleService, get_people_service
 
 router = APIRouter()
 
 
 class AssetIngestPathRequest(SQLModel):
     file_path: str
+
+
+class AssetGridItem(SQLModel):
+    id: UUID
+    mime_type: str
+    media_kind: str
+    captured_at: datetime | None = None
+    timeline_day: date
+    is_favorite: bool
+    width: int | None = None
+    height: int | None = None
+    duration_seconds: float | None = None
+    has_large_preview: bool
+    small_thumbnail_url: str
+    blurhash: str | None = None
+
+
+class AssetGridPageResponse(SQLModel):
+    items: list[AssetGridItem]
+    next_cursor: str | None = None
+    has_more: bool
 
 
 class TagSummary(SQLModel):
@@ -43,27 +73,6 @@ class PersonSummary(SQLModel):
 class FaceSummary(SQLModel):
     id: UUID
     person: PersonSummary | None = None
-
-
-class AssetCollectionItem(SQLModel):
-    id: UUID
-    captured_at: datetime | None = None
-    description: str | None = None
-    is_favorite: bool
-    width: int | None = None
-    height: int | None = None
-    has_large_preview: bool
-    small_thumbnail_url: str
-    blurhash: str | None = None
-    tags: list[TagSummary] = Field(default_factory=list)
-    faces: list[FaceSummary] = Field(default_factory=list)
-
-
-class AssetListResponse(SQLModel):
-    items: list[AssetCollectionItem]
-    page: int
-    page_size: int
-    total: int
 
 
 class AssetDetailResponse(SQLModel):
@@ -117,15 +126,54 @@ class AssetUpdateRequest(SQLModel):
     is_favorite: bool | None = None
 
 
+class AssetPreviewEnsureRequest(SQLModel):
+    asset_ids: list[UUID] = Field(min_length=1, max_length=100)
+    priority: str = "low"
+
+
+class AssetPreviewEnsureItemResponse(SQLModel):
+    asset_id: UUID
+    status: str
+    preview_url: str | None = None
+    job_id: UUID | None = None
+    error: str | None = None
+
+
+class AssetPreviewEnsureResponse(SQLModel):
+    items: list[AssetPreviewEnsureItemResponse]
+
+
 def _thumbnail_url(request: Request, asset_id: UUID, variant: str) -> str:
-    return (
-        str(request.base_url).rstrip("/")
-        + f"/media/processed/assets/{asset_id}/{variant}.webp"
-    )
+    return build_thumbnail_url(str(request.base_url), asset_id, variant)
 
 
 def _preview_url(request: Request, asset: Asset) -> str:
-    return str(request.base_url).rstrip("/") + f"/api/v1/assets/{asset.id}/preview"
+    return build_preview_url(str(request.base_url), asset)
+
+
+def _parse_person_ids(raw_person_ids: str | None) -> tuple[UUID, ...]:
+    if raw_person_ids is None or not raw_person_ids.strip():
+        return ()
+    values: list[UUID] = []
+    for item in raw_person_ids.split(","):
+        normalized = item.strip()
+        if not normalized:
+            continue
+        try:
+            values.append(UUID(normalized))
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="person_ids must be a comma-separated list of UUIDs",
+            ) from exc
+    unique_values: list[UUID] = []
+    seen: set[UUID] = set()
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        unique_values.append(value)
+    return tuple(unique_values)
 
 
 def _build_ingest_response(
@@ -216,6 +264,23 @@ def _build_people_models(rows: list[dict[str, Any]] | None) -> list[PersonSummar
     return list(unique_people.values())
 
 
+def _build_grid_item(request: Request, row: AssetGridRow) -> AssetGridItem:
+    return AssetGridItem(
+        id=row.id,
+        mime_type=row.mime_type,
+        media_kind=row.media_kind,
+        captured_at=row.captured_at,
+        timeline_day=row.timeline_day,
+        is_favorite=row.is_favorite,
+        width=row.width,
+        height=row.height,
+        duration_seconds=row.duration_seconds,
+        has_large_preview=row.has_large_preview,
+        small_thumbnail_url=_thumbnail_url(request, row.id, "small"),
+        blurhash=row.blurhash,
+    )
+
+
 @router.post(
     "/ingest", response_model=AssetIngestResponse, status_code=status.HTTP_201_CREATED
 )
@@ -245,40 +310,73 @@ async def upload_asset(
     return _build_ingest_response(request, result.asset, result.queued_job)
 
 
-@router.get("", response_model=AssetListResponse, include_in_schema=False)
-@router.get("/", response_model=AssetListResponse)
+@router.get("", response_model=AssetGridPageResponse, include_in_schema=False)
+@router.get("/", response_model=AssetGridPageResponse)
 def list_assets(
     request: Request,
-    page: int = 1,
-    page_size: int = 50,
+    limit: int = Query(default=DEFAULT_GRID_LIMIT, ge=1, le=200),
+    cursor: str | None = Query(default=None),
+    media_kind: str | None = Query(default=None),
+    month: date | None = Query(default=None),
+    day: date | None = Query(default=None),
+    person_ids: str | None = Query(default=None),
+    browse_service: AssetBrowseService = Depends(get_asset_browse_service),
+    people_service: PeopleService = Depends(get_people_service),
+    current_user: User = Depends(get_current_user),
+) -> AssetGridPageResponse:
+    del current_user
+    filters = AssetGridFilters(
+        media_kind=media_kind,
+        month=month,
+        day=day,
+        person_ids=tuple(
+            people_service.validate_person_ids(list(_parse_person_ids(person_ids)))
+        ),
+    )
+    page = browse_service.list_asset_grid_page(
+        filters=filters,
+        limit=limit,
+        cursor=cursor,
+    )
+    return AssetGridPageResponse(
+        items=[_build_grid_item(request, row) for row in page.items],
+        next_cursor=page.next_cursor,
+        has_more=page.has_more,
+    )
+
+
+@router.post("/previews/ensure", response_model=AssetPreviewEnsureResponse)
+async def ensure_asset_previews(
+    payload: AssetPreviewEnsureRequest,
+    request: Request,
     asset_service: AssetService = Depends(get_asset_service),
     current_user: User = Depends(get_current_user),
-) -> AssetListResponse:
+) -> AssetPreviewEnsureResponse:
     del current_user
-    if page < 1 or page_size < 1 or page_size > 200:
+    try:
+        priority = normalize_preview_priority(payload.priority)
+    except ValueError as exc:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid pagination parameters",
-        )
-
-    total, rows = asset_service.list_assets(page=page, page_size=page_size)
-    items = [
-        AssetCollectionItem(
-            id=asset.id,
-            captured_at=asset.captured_at,
-            description=asset.description,
-            is_favorite=asset.is_favorite,
-            width=asset.width,
-            height=asset.height,
-            has_large_preview=asset.has_large_preview,
-            small_thumbnail_url=_thumbnail_url(request, asset.id, "small"),
-            blurhash=asset.blurhash,
-            tags=_build_tag_models(tags),
-            faces=_build_face_models(faces),
-        )
-        for asset, tags, faces in rows
-    ]
-    return AssetListResponse(items=items, page=page, page_size=page_size, total=total)
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+    items = await AssetPreviewService(asset_service.session).ensure_previews(
+        asset_ids=payload.asset_ids,
+        base_url=str(request.base_url),
+        priority=priority,
+    )
+    return AssetPreviewEnsureResponse(
+        items=[
+            AssetPreviewEnsureItemResponse(
+                asset_id=item.asset_id,
+                status=item.status,
+                preview_url=item.preview_url,
+                job_id=item.job_id,
+                error=item.error,
+            )
+            for item in items
+        ]
+    )
 
 
 @router.get("/{asset_id}", response_model=AssetDetailResponse)
@@ -291,30 +389,6 @@ def get_asset(
     del current_user
     asset, tags, faces = asset_service.get_asset_detail(asset_id)
     return _build_detail_response(request, asset, tags, faces)
-
-
-@router.get("/{asset_id}/preview")
-async def get_asset_preview(
-    asset_id: UUID,
-    session_service: AssetService = Depends(get_asset_service),
-    current_user: User = Depends(get_current_user),
-):
-    del current_user
-    resolution = await AssetPreviewService(session_service.session).resolve_preview(
-        asset_id
-    )
-    if resolution.file_path is None:
-        return JSONResponse(
-            status_code=status.HTTP_202_ACCEPTED,
-            content={"status": "queued" if resolution.queued else "processing"},
-            headers={"Retry-After": "3"},
-        )
-    media_type = None
-    if resolution.file_path.suffix == ".mp4":
-        media_type = "video/mp4"
-    elif resolution.file_path.suffix == ".webp":
-        media_type = "image/webp"
-    return FileResponse(resolution.file_path, media_type=media_type)
 
 
 @router.patch("/{asset_id}", response_model=AssetDetailResponse)

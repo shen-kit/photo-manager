@@ -7,7 +7,6 @@ from uuid import UUID
 from sqlmodel import Session
 
 from app.services.jobs.service import JobService
-from app.services.manual_jobs.service import ManualJobService
 from app.services.notifications.service import NotificationService
 from app.services.notifications.types import NotificationCategory, NotificationLevel
 
@@ -28,7 +27,6 @@ class JobTaskContext:
         self.job_id = job_id
         self.job_service = JobService(session)
         self.notification_service = NotificationService(session)
-        self.manual_job_service = ManualJobService(session)
 
     def mark_running(self, message: str) -> None:
         if self.job_id is None:
@@ -57,7 +55,6 @@ class JobTaskContext:
             self.notify(notification)
         if self.job_id is not None:
             self.job_service.fail_job(self.job_id, error_message, result=result)
-            self.manual_job_service.on_child_job_terminal(self.job_id)
 
     def complete(
         self,
@@ -68,6 +65,5 @@ class JobTaskContext:
     ) -> None:
         if self.job_id is not None:
             self.job_service.complete_job(self.job_id, result=result, message=message)
-            self.manual_job_service.on_child_job_terminal(self.job_id)
         if notification is not None:
             self.notify(notification)

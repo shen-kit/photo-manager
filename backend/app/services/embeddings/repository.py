@@ -1,20 +1,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import case, func, text
 from sqlmodel import Session, select
 
-from app.models import Asset, AssetTag, Face, Person, Tag
+from app.models import Asset, Face
 
 
 @dataclass(frozen=True)
 class AssetEmbeddingSearchRow:
     asset: Asset
-    tags: list[dict[str, Any]] | None
-    faces: list[dict[str, Any]] | None
     distance: float
 
 
@@ -128,11 +126,23 @@ class EmbeddingRepository:
         model_id: int,
         query_embedding: list[float],
         limit: int,
-        offset: int,
+        cursor_distance: float | None = None,
+        cursor_timeline_at: datetime | None = None,
+        cursor_asset_id: UUID | None = None,
         person_ids: list[UUID] | None = None,
     ) -> list[AssetEmbeddingSearchRow]:
         person_ids = person_ids or []
         people_join = ""
+        where_clauses = [
+            "deleted_at IS NULL",
+            "search_vector IS NOT NULL",
+            "search_model_id = :model_id",
+        ]
+        parameters: dict[str, object] = {
+            "query_vector": vector_literal(query_embedding),
+            "model_id": model_id,
+            "limit": limit,
+        }
         if person_ids:
             people_join = """
                 JOIN (
@@ -145,28 +155,42 @@ class EmbeddingRepository:
                     HAVING count(DISTINCT person_id) = :person_count
                 ) AS matched_people ON matched_people.asset_id = assets.id
             """
-            people_where = ""
+            parameters["person_ids"] = person_ids
+            parameters["person_count"] = len(person_ids)
+        if (
+            cursor_distance is not None
+            and cursor_timeline_at is not None
+            and cursor_asset_id is not None
+        ):
+            where_clauses.append(
+                """
+                (
+                    search_vector <=> CAST(:query_vector AS vector) > :cursor_distance
+                    OR (
+                        search_vector <=> CAST(:query_vector AS vector) = :cursor_distance
+                        AND (
+                            timeline_at < :cursor_timeline_at
+                            OR (timeline_at = :cursor_timeline_at AND id < :cursor_asset_id)
+                        )
+                    )
+                )
+                """
+            )
+            parameters["cursor_distance"] = cursor_distance
+            parameters["cursor_timeline_at"] = cursor_timeline_at
+            parameters["cursor_asset_id"] = cursor_asset_id
         result = self.session.execute(
             text(
                 f"""
                 SELECT id, search_vector <=> CAST(:query_vector AS vector) AS distance
                 FROM assets
                 {people_join}
-                WHERE deleted_at IS NULL
-                  AND search_vector IS NOT NULL
-                  AND search_model_id = :model_id
-                ORDER BY search_vector <=> CAST(:query_vector AS vector), created_at DESC
-                LIMIT :limit OFFSET :offset
+                WHERE {" AND ".join(where_clauses)}
+                ORDER BY search_vector <=> CAST(:query_vector AS vector), timeline_at DESC, id DESC
+                LIMIT :limit
                 """
             ),
-            {
-                "query_vector": vector_literal(query_embedding),
-                "model_id": model_id,
-                "person_ids": person_ids,
-                "person_count": len(person_ids),
-                "limit": limit,
-                "offset": offset,
-            },
+            parameters,
         )
         rows = result.fetchall()
         if not rows:
@@ -174,27 +198,18 @@ class EmbeddingRepository:
 
         asset_ids = [row.id for row in rows]
         distance_by_id = {row.id: float(row.distance) for row in rows}
-        tags_subquery, faces_subquery = self._asset_relations_subqueries()
         ordering = case(
             {asset_id: index for index, asset_id in enumerate(asset_ids)},
             value=Asset.id,
         )
-        statement = (
-            select(Asset, tags_subquery.c.tags, faces_subquery.c.faces)
-            .where(Asset.id.in_(asset_ids))
-            .outerjoin(tags_subquery, tags_subquery.c.asset_id == Asset.id)
-            .outerjoin(faces_subquery, faces_subquery.c.asset_id == Asset.id)
-            .order_by(ordering)
-        )
+        statement = select(Asset).where(Asset.id.in_(asset_ids)).order_by(ordering)
         hydrated_rows = self.session.exec(statement).all()
         return [
             AssetEmbeddingSearchRow(
                 asset=asset,
-                tags=tags,
-                faces=faces,
                 distance=distance_by_id[asset.id],
             )
-            for asset, tags, faces in hydrated_rows
+            for asset in hydrated_rows
         ]
 
     def count_assets_for_people(self, *, person_ids: list[UUID]) -> int:
@@ -207,86 +222,47 @@ class EmbeddingRepository:
         *,
         person_ids: list[UUID],
         limit: int,
-        offset: int,
+        cursor_timeline_at: datetime | None = None,
+        cursor_asset_id: UUID | None = None,
     ) -> list[AssetEmbeddingSearchRow]:
         matching_assets = self._matching_assets_by_people_subquery(person_ids)
+        statement = (
+            select(Asset.id)
+            .join(matching_assets, matching_assets.c.asset_id == Asset.id)
+            .where(Asset.deleted_at.is_(None))
+        )
+        if cursor_timeline_at is not None and cursor_asset_id is not None:
+            statement = statement.where(
+                (Asset.timeline_at < cursor_timeline_at)
+                | (
+                    (Asset.timeline_at == cursor_timeline_at)
+                    & (Asset.id < cursor_asset_id)
+                )
+            )
         ordered_asset_ids = list(
             self.session.exec(
-                select(Asset.id)
-                .join(matching_assets, matching_assets.c.asset_id == Asset.id)
-                .where(Asset.deleted_at.is_(None))
-                .order_by(Asset.captured_at.desc().nullslast(), Asset.created_at.desc())
-                .offset(offset)
-                .limit(limit)
+                statement.order_by(Asset.timeline_at.desc(), Asset.id.desc()).limit(
+                    limit
+                )
             ).all()
         )
         if not ordered_asset_ids:
             return []
         distance_by_id = {asset_id: 0.0 for asset_id in ordered_asset_ids}
-        tags_subquery, faces_subquery = self._asset_relations_subqueries()
         ordering = case(
             {asset_id: index for index, asset_id in enumerate(ordered_asset_ids)},
             value=Asset.id,
         )
         hydrated_rows = self.session.exec(
-            select(Asset, tags_subquery.c.tags, faces_subquery.c.faces)
-            .where(Asset.id.in_(ordered_asset_ids))
-            .outerjoin(tags_subquery, tags_subquery.c.asset_id == Asset.id)
-            .outerjoin(faces_subquery, faces_subquery.c.asset_id == Asset.id)
-            .order_by(ordering)
+            select(Asset).where(Asset.id.in_(ordered_asset_ids)).order_by(ordering)
         ).all()
         return [
             AssetEmbeddingSearchRow(
                 asset=asset,
-                tags=tags,
-                faces=faces,
                 distance=distance_by_id[asset.id],
             )
-            for asset, tags, faces in hydrated_rows
+            for asset in hydrated_rows
         ]
-
-    def _asset_relations_subqueries(self) -> tuple[Any, Any]:
-        tags_subquery = (
-            select(
-                AssetTag.asset_id.label("asset_id"),
-                func.json_agg(
-                    func.json_build_object(
-                        "id",
-                        Tag.id,
-                        "name",
-                        Tag.name,
-                        "path",
-                        Tag.path,
-                    )
-                ).label("tags"),
-            )
-            .select_from(AssetTag)
-            .join(Tag, Tag.id == AssetTag.tag_id)
-            .group_by(AssetTag.asset_id)
-            .subquery()
-        )
-
-        faces_subquery = (
-            select(
-                Face.asset_id.label("asset_id"),
-                func.json_agg(
-                    func.json_build_object(
-                        "id",
-                        Face.id,
-                        "person_id",
-                        Person.id,
-                        "person_name",
-                        Person.name,
-                    )
-                ).label("faces"),
-            )
-            .select_from(Face)
-            .join(Person, Person.id == Face.person_id, isouter=True)
-            .where(Face.is_excluded.is_(False))
-            .group_by(Face.asset_id)
-            .subquery()
-        )
-        return tags_subquery, faces_subquery
 
     def _matching_assets_by_people_subquery(self, person_ids: list[UUID]):
         return (

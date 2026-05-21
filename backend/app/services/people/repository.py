@@ -8,7 +8,7 @@ import sqlalchemy as sa
 from sqlalchemy import case, func
 from sqlmodel import Session, select
 
-from app.models import Asset, AssetTag, Face, Person, Tag
+from app.models import Asset, Face, Person
 
 
 @dataclass(frozen=True)
@@ -319,41 +319,6 @@ class PeopleRepository:
         self.session.commit()
         return deleted_ids
 
-    def count_assets_for_people(self, *, person_ids: list[UUID]) -> int:
-        matching_assets = self._matching_assets_by_people_subquery(person_ids)
-        statement = select(func.count()).select_from(matching_assets)
-        return int(self.session.exec(statement).one())
-
-    def list_assets_for_people(
-        self,
-        *,
-        person_ids: list[UUID],
-        limit: int,
-        offset: int,
-    ) -> list[tuple[Asset, list[dict[str, Any]] | None, list[dict[str, Any]] | None]]:
-        matching_assets = self._matching_assets_by_people_subquery(person_ids)
-        return self._hydrate_assets_from_id_subquery(
-            matching_assets,
-            limit=limit,
-            offset=offset,
-        )
-
-    def count_assets_for_person(self, *, person_id: UUID) -> int:
-        return self.count_assets_for_people(person_ids=[person_id])
-
-    def list_assets_for_person(
-        self,
-        *,
-        person_id: UUID,
-        limit: int,
-        offset: int,
-    ) -> list[tuple[Asset, list[dict[str, Any]] | None, list[dict[str, Any]] | None]]:
-        return self.list_assets_for_people(
-            person_ids=[person_id],
-            limit=limit,
-            offset=offset,
-        )
-
     def _person_stats_subquery(self):
         return (
             select(
@@ -375,97 +340,6 @@ class PeopleRepository:
     def _named_person_sort_expression():
         trimmed_name = func.nullif(func.btrim(Person.name), "")
         return case((trimmed_name.is_(None), 1), else_=0)
-
-    def _matching_assets_by_people_subquery(self, person_ids: list[UUID]):
-        return (
-            select(Face.asset_id.label("asset_id"))
-            .join(Asset, Asset.id == Face.asset_id)
-            .where(
-                Asset.deleted_at.is_(None),
-                Face.asset_id.is_not(None),
-                Face.is_excluded.is_(False),
-                Face.person_id.in_(person_ids),
-            )
-            .group_by(Face.asset_id)
-            .having(func.count(func.distinct(Face.person_id)) == len(person_ids))
-            .subquery()
-        )
-
-    def _hydrate_assets_from_id_subquery(
-        self,
-        asset_ids_subquery,
-        *,
-        limit: int,
-        offset: int,
-    ) -> list[tuple[Asset, list[dict[str, Any]] | None, list[dict[str, Any]] | None]]:
-        ordered_assets_subquery = (
-            select(Asset.id)
-            .join(asset_ids_subquery, asset_ids_subquery.c.asset_id == Asset.id)
-            .where(Asset.deleted_at.is_(None))
-            .order_by(Asset.captured_at.desc().nullslast(), Asset.created_at.desc())
-            .offset(offset)
-            .limit(limit)
-            .subquery()
-        )
-        asset_ids = list(self.session.exec(select(ordered_assets_subquery.c.id)).all())
-        if not asset_ids:
-            return []
-        ordering = case(
-            {asset_id: index for index, asset_id in enumerate(asset_ids)},
-            value=Asset.id,
-        )
-        tags_subquery, faces_subquery = self._asset_relations_subqueries()
-        statement = (
-            select(Asset, tags_subquery.c.tags, faces_subquery.c.faces)
-            .where(Asset.id.in_(asset_ids))
-            .outerjoin(tags_subquery, tags_subquery.c.asset_id == Asset.id)
-            .outerjoin(faces_subquery, faces_subquery.c.asset_id == Asset.id)
-            .order_by(ordering)
-        )
-        return list(self.session.exec(statement).all())
-
-    def _asset_relations_subqueries(self) -> tuple[Any, Any]:
-        tags_subquery = (
-            select(
-                AssetTag.asset_id.label("asset_id"),
-                func.json_agg(
-                    func.json_build_object(
-                        "id",
-                        Tag.id,
-                        "name",
-                        Tag.name,
-                        "path",
-                        Tag.path,
-                    )
-                ).label("tags"),
-            )
-            .select_from(AssetTag)
-            .join(Tag, Tag.id == AssetTag.tag_id)
-            .group_by(AssetTag.asset_id)
-            .subquery()
-        )
-
-        faces_subquery = (
-            select(
-                Face.asset_id.label("asset_id"),
-                func.json_agg(
-                    func.json_build_object(
-                        "id",
-                        Face.id,
-                        "person_id",
-                        Person.id,
-                        "person_name",
-                        Person.name,
-                    )
-                ).label("faces"),
-            )
-            .select_from(Face)
-            .join(Person, Person.id == Face.person_id, isouter=True)
-            .where(Face.is_excluded.is_(False))
-            .group_by(Face.asset_id)
-            .subquery()
-        )
-        return tags_subquery, faces_subquery
 
     @staticmethod
     def _thumbnail_candidate_from_row(
