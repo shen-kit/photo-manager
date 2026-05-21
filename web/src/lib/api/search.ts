@@ -2,11 +2,18 @@ import { apiRequest } from "@/lib/api/client";
 import { runManualJob } from "@/lib/api/jobs";
 import type { SearchResponse } from "@/lib/types";
 
-export function searchAssets(query: string, limit = 24, offset = 0, personIds: string[] = []) {
+export function searchAssets(
+  query: string,
+  limit = 24,
+  cursor: string | null = null,
+  personIds: string[] = [],
+) {
   const search = new URLSearchParams({
     limit: String(limit),
-    offset: String(offset),
   });
+  if (cursor) {
+    search.set("cursor", cursor);
+  }
   if (query.trim()) {
     search.set("query", query.trim());
   }

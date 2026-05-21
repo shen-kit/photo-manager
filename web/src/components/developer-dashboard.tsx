@@ -4,7 +4,8 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tansta
 import {
   DatabaseZap,
   LoaderCircle,
-  LogOut,
+  Images,
+  ListFilter,
   ScanFace,
   SearchCheck,
   Star,
@@ -23,11 +24,11 @@ import { deleteAsset, ingestPath, listAssets, scanAssets, updateAsset, uploadAss
 import { fetchCurrentUser, getStoredUser, login, logout, refreshSession } from "@/lib/api/auth";
 import { clearSession, loadSession } from "@/lib/auth-store";
 import { useSessionBootstrap } from "@/lib/use-session-bootstrap";
-import type { AssetListItem, AssetListResponse } from "@/lib/types";
+import type { AssetGridItem, AssetGridPage, MediaKind } from "@/lib/types";
 
 const PAGE_SIZE = 24;
 
-function formatDimension(asset: AssetListItem) {
+function formatDimension(asset: AssetGridItem) {
   if (!asset.width || !asset.height) {
     return "Unknown size";
   }
@@ -52,21 +53,23 @@ export function DeveloperDashboard() {
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
   const [pathValue, setPathValue] = useState("");
   const [faceBackfillForce, setFaceBackfillForce] = useState(false);
+  const [mediaFilter, setMediaFilter] = useState<MediaKind | "all">("all");
 
   const assetsQuery = useInfiniteQuery({
-    queryKey: ["assets"],
-    queryFn: ({ pageParam }) => listAssets(pageParam, PAGE_SIZE),
+    queryKey: ["assets", mediaFilter],
+    queryFn: ({ pageParam }) =>
+      listAssets({
+        limit: PAGE_SIZE,
+        cursor: pageParam,
+        mediaKind: mediaFilter === "all" ? undefined : mediaFilter,
+      }),
     enabled: accessReady,
-    initialPageParam: 1,
-    getNextPageParam: (lastPage) => {
-      const loaded = lastPage.page * lastPage.page_size;
-      return loaded < lastPage.total ? lastPage.page + 1 : undefined;
-    },
+    initialPageParam: null as string | null,
+    getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
   });
 
   const assetPages = assetsQuery.data?.pages ?? [];
   const assets = useMemo(() => assetPages.flatMap((page) => page.items), [assetPages]);
-  const totalAssets = assetPages[0]?.total ?? 0;
 
   const scanMutation = useMutation({
     mutationFn: scanAssets,
@@ -113,9 +116,9 @@ export function DeveloperDashboard() {
       updateAsset(assetId, { is_favorite: nextValue }),
     onMutate: async ({ assetId, nextValue }) => {
       await queryClient.cancelQueries({ queryKey: ["assets"] });
-      const previous = queryClient.getQueryData(["assets"]);
+      const previous = queryClient.getQueryData(["assets", mediaFilter]);
 
-      queryClient.setQueryData(["assets"], (current: { pages: AssetListResponse[]; pageParams: number[] } | undefined) => {
+      queryClient.setQueryData(["assets", mediaFilter], (current: { pages: AssetGridPage[]; pageParams: (string | null)[] } | undefined) => {
         if (!current) {
           return current;
         }
@@ -134,7 +137,7 @@ export function DeveloperDashboard() {
     },
     onError: (error: Error, _variables, context) => {
       if (context?.previous) {
-        queryClient.setQueryData(["assets"], context.previous);
+        queryClient.setQueryData(["assets", mediaFilter], context.previous);
       }
       pushToast(error.message, "error");
     },
@@ -147,16 +150,14 @@ export function DeveloperDashboard() {
     mutationFn: deleteAsset,
     onMutate: async (assetId) => {
       await queryClient.cancelQueries({ queryKey: ["assets"] });
-      const previous = queryClient.getQueryData(["assets"]);
+      const previous = queryClient.getQueryData(["assets", mediaFilter]);
 
-      queryClient.setQueryData(["assets"], (current: { pages: AssetListResponse[]; pageParams: number[] } | undefined) => {
+      queryClient.setQueryData(["assets", mediaFilter], (current: { pages: AssetGridPage[]; pageParams: (string | null)[] } | undefined) => {
         if (!current) {
           return current;
         }
 
         const nextPages = current.pages.map((page) => ({
-          ...page,
-          total: Math.max(page.total - 1, 0),
           items: page.items.filter((asset) => asset.id !== assetId),
         }));
 
@@ -173,7 +174,7 @@ export function DeveloperDashboard() {
     },
     onError: (error: Error, _assetId, context) => {
       if (context?.previous) {
-        queryClient.setQueryData(["assets"], context.previous);
+        queryClient.setQueryData(["assets", mediaFilter], context.previous);
       }
       pushToast(error.message, "error");
     },
@@ -328,10 +329,24 @@ export function DeveloperDashboard() {
                 <div>
                   <h2 className="text-lg font-semibold text-white">Asset Gallery</h2>
                   <p className="text-sm text-slate-400">
-                    {assets.length} loaded of {totalAssets} assets
+                    {assets.length} asset{assets.length === 1 ? "" : "s"} loaded via cursor pagination
                   </p>
                 </div>
-                {assetsQuery.isFetching ? <p className="text-xs text-cyan-300">Syncing asset list...</p> : null}
+                <div className="flex flex-wrap items-center gap-3">
+                  <label className="flex items-center gap-2 text-xs text-slate-300">
+                    <ListFilter className="h-4 w-4 text-slate-500" />
+                    <select
+                      value={mediaFilter}
+                      onChange={(event) => setMediaFilter(event.target.value as MediaKind | "all")}
+                      className="rounded-2xl border border-white/10 bg-black/20 px-3 py-2 text-xs text-white outline-none focus:border-cyan-400/50"
+                    >
+                      <option value="all">All media</option>
+                      <option value="image">Images</option>
+                      <option value="video">Videos</option>
+                    </select>
+                  </label>
+                  {assetsQuery.isFetching ? <p className="text-xs text-cyan-300">Syncing asset list...</p> : null}
+                </div>
               </div>
 
               {assetsQuery.isLoading ? (
@@ -359,7 +374,7 @@ export function DeveloperDashboard() {
                           <div className="absolute inset-0" style={placeholderStyle(asset.blurhash ?? asset.id)} />
                           <img
                             src={asset.small_thumbnail_url}
-                            alt={asset.description ?? asset.id}
+                            alt={asset.id}
                             className="relative h-full w-full object-cover transition duration-300 group-hover:scale-[1.02]"
                           />
                         </div>
@@ -367,8 +382,12 @@ export function DeveloperDashboard() {
                       <div className="space-y-3 p-4">
                         <div className="flex items-start justify-between gap-3">
                           <div className="min-w-0">
-                            <p className="truncate text-sm font-semibold text-white">{asset.description || asset.id.slice(0, 8)}</p>
+                            <p className="truncate text-sm font-semibold text-white">{asset.id.slice(0, 8)}</p>
                             <p className="mt-1 text-xs text-slate-400">{formatDimension(asset)}</p>
+                            <p className="mt-1 text-[11px] text-slate-500">
+                              {asset.media_kind} · {asset.timeline_day}
+                              {asset.duration_seconds ? ` · ${asset.duration_seconds.toFixed(1)}s` : ""}
+                            </p>
                           </div>
                           <div className="flex items-center gap-1">
                             <button
@@ -391,14 +410,12 @@ export function DeveloperDashboard() {
                         </div>
 
                         <div className="flex flex-wrap gap-2">
-                          {asset.tags.slice(0, 3).map((tag) => (
-                            <span key={tag.id} className="rounded-full border border-white/10 px-2.5 py-1 text-[11px] text-slate-300">
-                              {tag.name}
-                            </span>
-                          ))}
-                          {asset.faces.length > 0 ? (
+                          <span className="rounded-full border border-white/10 px-2.5 py-1 text-[11px] text-slate-300">
+                            {asset.mime_type}
+                          </span>
+                          {asset.has_large_preview ? (
                             <span className="rounded-full border border-cyan-400/20 bg-cyan-400/10 px-2.5 py-1 text-[11px] text-cyan-200">
-                              {asset.faces.length} face{asset.faces.length === 1 ? "" : "s"}
+                              Generated preview
                             </span>
                           ) : null}
                         </div>
@@ -410,7 +427,7 @@ export function DeveloperDashboard() {
 
               {!assetsQuery.isLoading && assets.length === 0 && !assetsQuery.isError ? (
                 <div className="flex min-h-[280px] items-center justify-center rounded-3xl border border-dashed border-white/10 text-sm text-slate-500">
-                  No assets available yet.
+                  No assets available for the current filters.
                 </div>
               ) : null}
 

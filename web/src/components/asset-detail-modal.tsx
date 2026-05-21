@@ -5,6 +5,7 @@ import { CheckCircle2, Eye, EyeOff, LoaderCircle, ScanFace, X } from "lucide-rea
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 
+import { AuthenticatedPreview } from "@/components/authenticated-preview";
 import { useToast } from "@/components/toast-provider";
 import { getAsset } from "@/lib/api/assets";
 import { getAssetFaces, triggerAssetFaceProcessing, updateAssetFace } from "@/lib/api/faces";
@@ -65,6 +66,7 @@ export function AssetDetailModal({ assetId, onClose, thumbnailPersonId = null }:
       setShowFaces(true);
       await queryClient.invalidateQueries({ queryKey: ["jobs"] });
       await facesQuery.refetch();
+      await queryClient.invalidateQueries({ queryKey: ["asset", assetId] });
     },
     onError: (mutationError: Error) => pushToast(mutationError.message, "error"),
   });
@@ -81,7 +83,7 @@ export function AssetDetailModal({ assetId, onClose, thumbnailPersonId = null }:
       pushToast("Face updated", "success");
       await queryClient.invalidateQueries({ queryKey: ["asset-faces", assetId] });
       await queryClient.invalidateQueries({ queryKey: ["people"] });
-      await queryClient.invalidateQueries({ queryKey: ["person-assets"] });
+      await queryClient.invalidateQueries({ queryKey: ["assets"] });
       await queryClient.invalidateQueries({ queryKey: ["search"] });
     },
     onError: (mutationError: Error) => pushToast(mutationError.message, "error"),
@@ -135,7 +137,9 @@ export function AssetDetailModal({ assetId, onClose, thumbnailPersonId = null }:
 
   const isVideo = Boolean(data?.mime_type?.startsWith("video/"));
   const isImage = Boolean(data && !isVideo);
-  const isVideoPreviewReady = data?.preview_status === "ready";
+  const fallbackThumbnailUrl = data
+    ? `/media/processed/assets/${data.id}/small.webp`
+    : null;
 
   return createPortal(
     <div
@@ -163,27 +167,30 @@ export function AssetDetailModal({ assetId, onClose, thumbnailPersonId = null }:
           <div className="border-b border-white/10 bg-black/20 md:border-b-0 md:border-r">
             {data ? (
               isVideo ? (
-                isVideoPreviewReady ? (
-                  <video
-                    src={data.large_preview_url}
-                    controls
-                    preload="metadata"
-                    className="h-full w-full object-contain"
-                  />
-                ) : (
-                  <div className="flex h-full items-center justify-center px-6 text-center text-sm text-slate-400">
-                    {data?.preview_status === "failed"
-                      ? "Video preview generation failed. Check the asset metadata for codec details."
-                      : "Video preview is still being generated."}
-                  </div>
-                )
+                <AuthenticatedPreview
+                  assetId={data.id}
+                  previewUrl={data.preview_url}
+                  mimeType={data.mime_type}
+                  alt={data.master_path}
+                  className="relative h-full w-full"
+                  videoClassName="h-full w-full object-contain"
+                  queuedMessage={
+                    data.preview_status === "failed"
+                      ? "Video preview previously failed. Retrying on demand."
+                      : "Video preview is still being generated."
+                  }
+                />
               ) : (
                 <div className="flex h-full items-center justify-center p-4">
                   <div className="relative inline-block max-h-full max-w-full">
-                    <img
-                      src={data.large_preview_url}
+                    <AuthenticatedPreview
+                      assetId={data.id}
+                      previewUrl={data.preview_url}
+                      mimeType={data.mime_type}
                       alt={data.master_path}
-                      className="block max-h-[calc(85vh-9rem)] max-w-full object-contain"
+                      fallbackUrl={fallbackThumbnailUrl}
+                      className="relative"
+                      imageClassName="block max-h-[calc(85vh-9rem)] max-w-full object-contain"
                     />
                     {showFaces && !facesQuery.isLoading ? (
                       <div className="pointer-events-none absolute inset-0">

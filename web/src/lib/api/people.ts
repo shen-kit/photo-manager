@@ -1,7 +1,6 @@
 import { apiRequest } from "@/lib/api/client";
 import { runManualJob } from "@/lib/api/jobs";
 import type {
-  AssetListResponse,
   Person,
   PersonListParams,
   PersonMergeResponse,
@@ -52,17 +51,6 @@ export function updatePersonThumbnail(personId: string, assetId: string) {
     body: JSON.stringify({ asset_id: assetId }),
     auth: true,
   });
-}
-
-export function getPersonAssets(personId: string, page = 1, pageSize = 24) {
-  const search = new URLSearchParams({
-    page: String(page),
-    page_size: String(pageSize),
-  });
-  return apiRequest<AssetListResponse>(
-    `/api/v1/people/${personId}/assets?${search.toString()}`,
-    { auth: true },
-  );
 }
 
 export function mergePeople(sourcePersonId: string, targetPersonId: string) {

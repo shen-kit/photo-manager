@@ -9,6 +9,8 @@ type RequestOptions = {
   contentType?: string | null;
 };
 
+type FetchResult = Response;
+
 type ApiErrorPayload = {
   detail?: unknown;
   [key: string]: unknown;
@@ -135,4 +137,28 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
   }
 
   return (await response.json()) as T;
+}
+
+export async function authenticatedFetch(
+  path: string,
+  options: RequestOptions = {},
+): Promise<FetchResult> {
+  const execute = async () =>
+    fetch(path, {
+      method: options.method ?? "GET",
+      body: options.body ?? null,
+      headers: buildHeaders(options),
+      credentials: "include",
+    });
+
+  let response = await execute();
+
+  if (response.status === 401 && options.auth) {
+    const accessToken = await refreshAccessToken();
+    if (accessToken) {
+      response = await execute();
+    }
+  }
+
+  return response;
 }

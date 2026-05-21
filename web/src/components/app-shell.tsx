@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation } from "@tanstack/react-query";
-import { Home, LoaderCircle, LogOut, Search, Trash2, Users, Workflow } from "lucide-react";
+import { CalendarDays, Home, LoaderCircle, LogOut, Search, Trash2, Users, Workflow } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import type { ReactNode } from "react";
@@ -48,6 +48,8 @@ export function AppShell({
     const isActive =
       href === "/jobs"
         ? pathname.startsWith("/jobs")
+        : href === "/timeline"
+          ? pathname.startsWith("/timeline")
         : href === "/people"
           ? pathname.startsWith("/people")
           : href === "/trash"
@@ -86,6 +88,10 @@ export function AppShell({
               <Link href="/search" className={navLinkClass("/search")}>
                 <Search className="h-4 w-4" />
                 Search
+              </Link>
+              <Link href="/timeline" className={navLinkClass("/timeline")}>
+                <CalendarDays className="h-4 w-4" />
+                Timeline
               </Link>
               <Link href="/people" className={navLinkClass("/people")}>
                 <Users className="h-4 w-4" />

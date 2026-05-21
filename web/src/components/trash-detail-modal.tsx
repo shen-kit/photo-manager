@@ -5,6 +5,7 @@ import { AlertCircle, LoaderCircle, RotateCcw, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 
+import { AuthenticatedPreview } from "@/components/authenticated-preview";
 import { useToast } from "@/components/toast-provider";
 import { getTrashAsset, restoreTrashAsset } from "@/lib/api/trash";
 import { formatDateTime, formatJson } from "@/lib/format";
@@ -48,6 +49,9 @@ export function TrashDetailModal({ assetId, onClose }: TrashDetailModalProps) {
 
   const asset = detailQuery.data;
   const isVideo = asset?.mime_type?.startsWith("video/");
+  const fallbackThumbnailUrl = asset
+    ? `/media/processed/assets/${asset.id}/small.webp`
+    : null;
 
   return createPortal(
     <div
@@ -84,18 +88,28 @@ export function TrashDetailModal({ assetId, onClose }: TrashDetailModalProps) {
               </div>
             ) : asset ? (
               isVideo ? (
-                <video
-                  src={asset.large_preview_url}
-                  controls
-                  preload="metadata"
-                  className="h-full w-full object-contain"
+                <AuthenticatedPreview
+                  assetId={asset.id}
+                  previewUrl={asset.preview_url}
+                  mimeType={asset.mime_type}
+                  alt={asset.master_path}
+                  className="relative h-full w-full"
+                  videoClassName="h-full w-full object-contain"
+                  queuedMessage="Preview request queued. Deleted-asset previews may depend on backend support."
+                  errorMessage="Preview unavailable for this trashed asset."
                 />
               ) : (
                 <div className="flex h-full items-center justify-center p-4">
-                  <img
-                    src={asset.large_preview_url}
+                  <AuthenticatedPreview
+                    assetId={asset.id}
+                    previewUrl={asset.preview_url}
+                    mimeType={asset.mime_type}
                     alt={asset.master_path}
-                    className="block max-h-[calc(85vh-9rem)] max-w-full object-contain"
+                    fallbackUrl={fallbackThumbnailUrl}
+                    className="relative"
+                    imageClassName="block max-h-[calc(85vh-9rem)] max-w-full object-contain"
+                    queuedMessage="Preview request queued. Deleted-asset previews may depend on backend support."
+                    errorMessage="Preview unavailable for this trashed asset."
                   />
                 </div>
               )

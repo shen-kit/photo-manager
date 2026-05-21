@@ -1,6 +1,6 @@
 "use client";
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Eye, EyeOff, GitMerge, LoaderCircle, RefreshCcw } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
@@ -8,13 +8,14 @@ import { AppShell } from "@/components/app-shell";
 import { AssetDetailModal } from "@/components/asset-detail-modal";
 import { LoginScreen } from "@/components/login-screen";
 import { useToast } from "@/components/toast-provider";
-import { getPerson, getPersonAssets, listPeople, mergePeople, updatePerson, updatePersonThumbnail } from "@/lib/api/people";
+import { listAssets } from "@/lib/api/assets";
+import { getPerson, listPeople, mergePeople, updatePerson, updatePersonThumbnail } from "@/lib/api/people";
 import { useSessionBootstrap } from "@/lib/use-session-bootstrap";
-import type { AssetListItem } from "@/lib/types";
+import type { AssetGridItem } from "@/lib/types";
 
 const PAGE_SIZE = 24;
 
-function formatDimension(asset: AssetListItem) {
+function formatDimension(asset: AssetGridItem) {
   if (!asset.width || !asset.height) {
     return "Unknown size";
   }
@@ -35,10 +36,17 @@ export function PersonDetailPage({ personId }: { personId: string }) {
     enabled: accessReady,
   });
 
-  const assetsQuery = useQuery({
-    queryKey: ["person-assets", personId],
-    queryFn: () => getPersonAssets(personId, 1, PAGE_SIZE),
+  const assetsQuery = useInfiniteQuery({
+    queryKey: ["assets", "person", personId],
+    queryFn: ({ pageParam }) =>
+      listAssets({
+        limit: PAGE_SIZE,
+        cursor: pageParam,
+        personIds: [personId],
+      }),
     enabled: accessReady,
+    initialPageParam: null as string | null,
+    getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
   });
 
   const peopleQuery = useQuery({
@@ -81,7 +89,10 @@ export function PersonDetailPage({ personId }: { personId: string }) {
   });
 
   const person = personQuery.data;
-  const assets = assetsQuery.data?.items ?? [];
+  const assets = useMemo(
+    () => assetsQuery.data?.pages.flatMap((page) => page.items) ?? [],
+    [assetsQuery.data?.pages],
+  );
   const mergeOptions = useMemo(
     () => (peopleQuery.data ?? []).filter((candidate) => candidate.id !== personId),
     [peopleQuery.data, personId],
@@ -276,14 +287,17 @@ export function PersonDetailPage({ personId }: { personId: string }) {
                   <article key={asset.id} className="overflow-hidden rounded-3xl border border-white/10 bg-ink-800/70">
                     <button type="button" className="block w-full text-left" onClick={() => setSelectedAssetId(asset.id)}>
                       <div className="aspect-square overflow-hidden bg-black/20">
-                        <img src={asset.small_thumbnail_url} alt={asset.description ?? asset.id} className="h-full w-full object-cover" />
+                        <img src={asset.small_thumbnail_url} alt={asset.id} className="h-full w-full object-cover" />
                       </div>
                     </button>
                     <div className="space-y-2 p-4">
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0">
-                          <p className="truncate text-sm font-semibold text-white">{asset.description || asset.id.slice(0, 8)}</p>
+                          <p className="truncate text-sm font-semibold text-white">{asset.id.slice(0, 8)}</p>
                           <p className="text-xs text-slate-400">{formatDimension(asset)}</p>
+                          <p className="text-[11px] text-slate-500">
+                            {asset.media_kind} · {asset.timeline_day}
+                          </p>
                         </div>
                         <button
                           type="button"
@@ -295,15 +309,26 @@ export function PersonDetailPage({ personId }: { personId: string }) {
                         </button>
                       </div>
                       <div className="flex flex-wrap gap-2 text-[11px] text-slate-300">
-                        {asset.faces.slice(0, 4).map((face) => (
-                          <span key={face.id} className="rounded-full border border-white/10 px-2.5 py-1">
-                            {face.person?.name?.trim() || "Unnamed person"}
-                          </span>
-                        ))}
+                        <span className="rounded-full border border-white/10 px-2.5 py-1">
+                          {asset.mime_type}
+                        </span>
                       </div>
                     </div>
                   </article>
                 ))}
+              </div>
+            ) : null}
+
+            {assetsQuery.hasNextPage ? (
+              <div className="mt-6 flex justify-center">
+                <button
+                  type="button"
+                  onClick={() => assetsQuery.fetchNextPage()}
+                  disabled={assetsQuery.isFetchingNextPage}
+                  className="rounded-2xl border border-white/10 bg-white/[0.03] px-5 py-3 text-sm text-slate-200 transition hover:bg-white/[0.07] disabled:opacity-60"
+                >
+                  {assetsQuery.isFetchingNextPage ? "Loading…" : "Load more"}
+                </button>
               </div>
             ) : null}
           </section>

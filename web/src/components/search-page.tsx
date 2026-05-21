@@ -1,6 +1,6 @@
 "use client";
 
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery } from "@tanstack/react-query";
 import { AlertTriangle, LoaderCircle, Search, Users, Workflow, X } from "lucide-react";
 import Link from "next/link";
 import { useMemo, useState } from "react";
@@ -55,10 +55,13 @@ export function SearchPage() {
     enabled: accessReady,
   });
 
-  const searchQuery = useQuery({
+  const searchQuery = useInfiniteQuery({
     queryKey: ["search", normalizedQuery, selectedPersonIds],
-    queryFn: () => searchAssets(normalizedQuery, SEARCH_LIMIT, 0, selectedPersonIds),
+    queryFn: ({ pageParam }) =>
+      searchAssets(normalizedQuery, SEARCH_LIMIT, pageParam, selectedPersonIds),
     enabled: accessReady && hasFilters,
+    initialPageParam: null as string | null,
+    getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
   });
 
   const backfillMutation = useMutation({
@@ -72,7 +75,10 @@ export function SearchPage() {
     },
   });
 
-  const results = useMemo(() => searchQuery.data?.items ?? [], [searchQuery.data]);
+  const results = useMemo(
+    () => searchQuery.data?.pages.flatMap((page) => page.items) ?? [],
+    [searchQuery.data?.pages],
+  );
   const people = peopleQuery.data ?? [];
   const selectedPeople = people.filter((person) => selectedPersonIds.includes(person.id));
 
@@ -241,7 +247,7 @@ export function SearchPage() {
             {hasFilters ? (
               <div className="mb-5 text-sm text-slate-400">
                 {searchQuery.data
-                  ? `${searchQuery.data.total} results${searchQuery.data.query ? ` for "${searchQuery.data.query}"` : ""}`
+                  ? `${results.length} result${results.length === 1 ? "" : "s"} loaded${normalizedQuery ? ` for "${normalizedQuery}"` : ""}`
                   : selectedPersonIds.length > 0 && !normalizedQuery
                     ? "Searching by selected people..."
                     : `Searching for "${normalizedQuery}"`}
@@ -288,19 +294,23 @@ export function SearchPage() {
                     >
                       <div className="relative aspect-square overflow-hidden">
                         <div className="absolute inset-0" style={placeholderStyle(asset.blurhash ?? asset.id)} />
-                        <img
-                          src={asset.small_thumbnail_url}
-                          alt={asset.description ?? asset.id}
-                          className="relative h-full w-full object-cover transition duration-300 group-hover:scale-[1.02]"
-                        />
+                          <img
+                            src={asset.small_thumbnail_url}
+                            alt={asset.id}
+                            className="relative h-full w-full object-cover transition duration-300 group-hover:scale-[1.02]"
+                          />
                       </div>
                     </button>
                     <div className="space-y-3 p-4">
                       <div>
                         <p className="truncate text-sm font-semibold text-white">
-                          {asset.description || asset.id.slice(0, 8)}
+                          {asset.id.slice(0, 8)}
                         </p>
                         <p className="mt-1 text-xs text-slate-400">{formatDimension(asset)}</p>
+                        <p className="mt-1 text-[11px] text-slate-500">
+                          {asset.media_kind} · {asset.timeline_day}
+                          {asset.duration_seconds ? ` · ${asset.duration_seconds.toFixed(1)}s` : ""}
+                        </p>
                       </div>
                       <div className="flex flex-wrap gap-2 text-[11px]">
                         <span className="rounded-full border border-cyan-400/20 bg-cyan-400/10 px-2.5 py-1 text-cyan-200">
@@ -309,18 +319,26 @@ export function SearchPage() {
                         <span className="rounded-full border border-white/10 px-2.5 py-1 text-slate-300">
                           Distance {asset.distance.toFixed(3)}
                         </span>
-                        {asset.faces
-                          .filter((face) => face.person?.id)
-                          .slice(0, 2)
-                          .map((face) => (
-                            <span key={face.id} className="rounded-full border border-white/10 px-2.5 py-1 text-slate-300">
-                              {face.person?.name?.trim() || "Unnamed person"}
-                            </span>
-                          ))}
+                        <span className="rounded-full border border-white/10 px-2.5 py-1 text-slate-300">
+                          {asset.mime_type}
+                        </span>
                       </div>
                     </div>
                   </article>
                 ))}
+              </div>
+            ) : null}
+
+            {searchQuery.hasNextPage ? (
+              <div className="mt-6 flex justify-center">
+                <button
+                  type="button"
+                  onClick={() => searchQuery.fetchNextPage()}
+                  disabled={searchQuery.isFetchingNextPage}
+                  className="rounded-2xl border border-white/10 bg-white/[0.03] px-5 py-3 text-sm text-slate-200 transition hover:bg-white/[0.07] disabled:opacity-60"
+                >
+                  {searchQuery.isFetchingNextPage ? "Loading…" : "Load more"}
+                </button>
               </div>
             ) : null}
           </section>

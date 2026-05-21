@@ -21,6 +21,8 @@ export type AssetTag = {
   path: string;
 };
 
+export type MediaKind = "image" | "video";
+
 export type PersonSummary = {
   id: string | null;
   name: string | null;
@@ -83,26 +85,28 @@ export type PersonMergeResponse = {
   target_person_id: string;
 };
 
-export type AssetListItem = {
+export type AssetGridItem = {
   id: string;
+  mime_type: string;
+  media_kind: MediaKind;
   captured_at: string | null;
-  description: string | null;
+  timeline_day: string;
   is_favorite: boolean;
   width: number | null;
   height: number | null;
+  duration_seconds: number | null;
   has_large_preview: boolean;
   small_thumbnail_url: string;
   blurhash: string | null;
-  tags: AssetTag[];
-  faces: FaceSummary[];
 };
 
-export type AssetListResponse = {
-  items: AssetListItem[];
-  page: number;
-  page_size: number;
-  total: number;
+export type CursorPage<T> = {
+  items: T[];
+  next_cursor: string | null;
+  has_more: boolean;
 };
+
+export type AssetGridPage = CursorPage<AssetGridItem>;
 
 export type AssetDetail = {
   id: string;
@@ -126,7 +130,7 @@ export type AssetDetail = {
   tags: AssetTag[];
   people: PersonSummary[];
   faces: FaceSummary[];
-  large_preview_url: string;
+  preview_url: string;
   created_at: string;
 };
 
@@ -144,9 +148,28 @@ export type AssetIngestResponse = {
   preview_status: string | null;
   tiny_thumbnail_url: string;
   small_thumbnail_url: string;
-  large_preview_url: string;
+  preview_url: string;
   blurhash: string | null;
   queued_job: boolean;
+};
+
+export type AssetPreviewEnsureStatus =
+  | "ready"
+  | "generating"
+  | "failed"
+  | "unsupported"
+  | "not_found";
+
+export type AssetPreviewEnsureItem = {
+  asset_id: string;
+  status: AssetPreviewEnsureStatus;
+  preview_url: string | null;
+  job_id: string | null;
+  error: string | null;
+};
+
+export type AssetPreviewEnsureResponse = {
+  items: AssetPreviewEnsureItem[];
 };
 
 export type Job = {
@@ -232,26 +255,26 @@ export type AssetUpdatePayload = {
 
 export type SearchResultItem = {
   id: string;
+  mime_type: string;
+  media_kind: MediaKind;
   captured_at: string | null;
-  description: string | null;
+  timeline_day: string;
   is_favorite: boolean;
   width: number | null;
   height: number | null;
+  duration_seconds: number | null;
   has_large_preview: boolean;
   small_thumbnail_url: string;
   blurhash: string | null;
   score: number;
   distance: number;
-  tags: AssetTag[];
-  faces: FaceSummary[];
 };
 
 export type SearchResponse = {
   items: SearchResultItem[];
   query: string;
-  limit: number;
-  offset: number;
-  total: number;
+  next_cursor: string | null;
+  has_more: boolean;
 };
 
 export type TrashSort =
@@ -305,11 +328,34 @@ export type TrashAssetDetail = {
   tags: AssetTag[];
   people: PersonSummary[];
   faces: FaceSummary[];
-  large_preview_url: string;
+  preview_url: string;
   created_at: string;
 };
 
 export type RestoredAssetDetail = Omit<TrashAssetDetail, "deleted_at">;
+
+export type TimelineBucketCover = {
+  id: string;
+  media_kind: MediaKind;
+  small_thumbnail_url: string;
+  blurhash: string | null;
+};
+
+export type TimelineMonthBucket = {
+  month: string;
+  asset_count: number;
+  first_timeline_at: string;
+  last_timeline_at: string;
+  cover: TimelineBucketCover | null;
+};
+
+export type TimelineDayBucket = {
+  day: string;
+  asset_count: number;
+  first_timeline_at: string;
+  last_timeline_at: string;
+  cover: TimelineBucketCover | null;
+};
 
 export type TrashRestoreJobSummary = {
   queued_metadata_job: boolean;

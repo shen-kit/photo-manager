@@ -2,23 +2,60 @@ import { apiRequest } from "@/lib/api/client";
 import { runManualJob } from "@/lib/api/jobs";
 import type {
   AssetDetail,
+  AssetGridPage,
   AssetIngestResponse,
-  AssetListResponse,
+  AssetPreviewEnsureResponse,
   AssetUpdatePayload,
 } from "@/lib/types";
 
-export function listAssets(page: number, pageSize: number) {
-  const search = new URLSearchParams({
-    page: String(page),
-    page_size: String(pageSize),
-  });
-  return apiRequest<AssetListResponse>(`/api/v1/assets?${search.toString()}`, {
+type ListAssetsParams = {
+  limit?: number;
+  cursor?: string | null;
+  mediaKind?: "image" | "video";
+  month?: string;
+  day?: string;
+  personIds?: string[];
+};
+
+export function listAssets(params: ListAssetsParams = {}) {
+  const search = new URLSearchParams();
+  search.set("limit", String(params.limit ?? 24));
+  if (params.cursor) {
+    search.set("cursor", params.cursor);
+  }
+  if (params.mediaKind) {
+    search.set("media_kind", params.mediaKind);
+  }
+  if (params.month) {
+    search.set("month", params.month);
+  }
+  if (params.day) {
+    search.set("day", params.day);
+  }
+  if (params.personIds?.length) {
+    search.set("person_ids", params.personIds.join(","));
+  }
+  return apiRequest<AssetGridPage>(`/api/v1/assets?${search.toString()}`, {
     auth: true,
   });
 }
 
 export function getAsset(assetId: string) {
   return apiRequest<AssetDetail>(`/api/v1/assets/${assetId}`, {
+    auth: true,
+  });
+}
+
+export function ensureAssetPreviews(
+  assetIds: string[],
+  priority: "low" | "normal" | "high" = "low",
+) {
+  return apiRequest<AssetPreviewEnsureResponse>("/api/v1/assets/previews/ensure", {
+    method: "POST",
+    body: JSON.stringify({
+      asset_ids: assetIds,
+      priority,
+    }),
     auth: true,
   });
 }
