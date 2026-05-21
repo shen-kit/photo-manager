@@ -9,7 +9,7 @@ from uuid import UUID
 from sqlmodel import Session
 
 from app.models import Asset
-from app.services.ai_processing.repository import AIProcessingRepository
+from app.services.asset_processing.repository import AssetProcessingRepository
 from app.services.ai_models.repository import (
     AI_MODEL_TASK_CLIP_EMBEDDING,
     AIModelConfigurationError,
@@ -50,14 +50,14 @@ class EmbeddingService:
         session: Session,
         *,
         repository: EmbeddingRepository | None = None,
-        ai_processing_repository: AIProcessingRepository | None = None,
+        asset_processing_repository: AssetProcessingRepository | None = None,
         ai_model_repository: AIModelRepository | None = None,
         provider: EmbeddingProvider | None = None,
     ) -> None:
         self.session = session
         self.repository = repository or EmbeddingRepository(session)
-        self.ai_processing_repository = (
-            ai_processing_repository or AIProcessingRepository(session)
+        self.asset_processing_repository = (
+            asset_processing_repository or AssetProcessingRepository(session)
         )
         self.ai_model_repository = ai_model_repository or AIModelRepository(session)
         self.provider = provider or OpenClipEmbeddingProvider()
@@ -145,7 +145,7 @@ class EmbeddingService:
             )
         else:
             total = len(
-                self.ai_processing_repository.list_asset_ids_needing_clip_processing(
+                self.asset_processing_repository.list_asset_ids_needing_clip_processing(
                     ai_model_id=clip_model.id
                 )
             )
@@ -173,7 +173,7 @@ class EmbeddingService:
             )
         else:
             asset_ids = (
-                self.ai_processing_repository.list_asset_ids_needing_clip_processing(
+                self.asset_processing_repository.list_asset_ids_needing_clip_processing(
                     ai_model_id=clip_model.id,
                     limit=limit,
                     offset=offset,

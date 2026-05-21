@@ -5,11 +5,23 @@ from uuid import UUID
 from app.services.embeddings.tasks import (
     generate_asset_clip_embedding as generate_asset_clip_embedding_job,
 )
+from app.services.embeddings.tasks import (
+    generate_asset_clip_embedding_batch as generate_asset_clip_embedding_batch_job,
+)
 from app.services.faces.tasks import (
     process_asset_faces as process_asset_faces_job,
 )
+from app.services.faces.tasks import (
+    process_asset_faces_batch as process_asset_faces_batch_job,
+)
 from app.services.assets.jobs import (
     process_asset_metadata as process_asset_metadata_job,
+)
+from app.services.assets.jobs import (
+    generate_asset_preview as generate_asset_preview_job,
+)
+from app.services.assets.jobs import (
+    process_asset_thumbnail_batch as process_asset_thumbnail_batch_job,
 )
 from app.services.manual_jobs.service import ManualJobService
 from app.core.database import engine
@@ -43,6 +55,14 @@ async def generate_asset_clip_embedding(
     await generate_asset_clip_embedding_job(ctx, asset_id, force, job_id)
 
 
+async def generate_asset_clip_embedding_batch(
+    ctx: dict[str, object],
+    items: list[dict[str, str | None]],
+    force: bool = False,
+) -> None:
+    await generate_asset_clip_embedding_batch_job(ctx, items, force)
+
+
 async def process_asset_faces(
     ctx: dict[str, object],
     asset_id: str,
@@ -51,6 +71,30 @@ async def process_asset_faces(
     job_id: str | None = None,
 ) -> None:
     await process_asset_faces_job(ctx, asset_id, force, auto_match, job_id)
+
+
+async def process_asset_faces_batch(
+    ctx: dict[str, object],
+    items: list[dict[str, str | None]],
+    force: bool = False,
+    auto_match: bool = True,
+) -> None:
+    await process_asset_faces_batch_job(ctx, items, force, auto_match)
+
+
+async def process_asset_thumbnail_batch(
+    ctx: dict[str, object],
+    items: list[dict[str, str | None]],
+) -> None:
+    await process_asset_thumbnail_batch_job(ctx, items)
+
+
+async def generate_asset_preview(
+    ctx: dict[str, object],
+    asset_id: str,
+    job_id: str | None = None,
+) -> None:
+    await generate_asset_preview_job(ctx, asset_id, job_id)
 
 
 async def run_manual_job(

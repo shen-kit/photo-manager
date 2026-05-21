@@ -10,8 +10,12 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 logger = logging.getLogger(__name__)
 
 PROCESS_ASSET_METADATA_JOB_NAME = "process_asset_metadata"
+GENERATE_ASSET_PREVIEW_JOB_NAME = "generate_asset_preview"
 GENERATE_ASSET_CLIP_EMBEDDING_JOB_NAME = "generate_asset_clip_embedding"
 PROCESS_ASSET_FACES_JOB_NAME = "process_asset_faces"
+PROCESS_ASSET_THUMBNAIL_BATCH_JOB_NAME = "process_asset_thumbnail_batch"
+GENERATE_ASSET_CLIP_EMBEDDING_BATCH_JOB_NAME = "generate_asset_clip_embedding_batch"
+PROCESS_ASSET_FACES_BATCH_JOB_NAME = "process_asset_faces_batch"
 RUN_MANUAL_JOB_NAME = "run_manual_job"
 SCHEDULE_MANUAL_JOB_BATCH_NAME = "schedule_manual_job_batch"
 
@@ -47,6 +51,17 @@ async def enqueue_asset_processing_job(
     return await enqueue_worker_job(PROCESS_ASSET_METADATA_JOB_NAME, *args)
 
 
+async def enqueue_asset_preview_job(
+    asset_id: UUID,
+    *,
+    job_id: UUID | None = None,
+) -> bool:
+    args: list[object] = [str(asset_id)]
+    if job_id is not None:
+        args.append(str(job_id))
+    return await enqueue_worker_job(GENERATE_ASSET_PREVIEW_JOB_NAME, *args)
+
+
 async def enqueue_asset_embedding_job(
     asset_id: UUID,
     *,
@@ -70,6 +85,38 @@ async def enqueue_asset_faces_job(
     if job_id is not None:
         args.append(str(job_id))
     return await enqueue_worker_job(PROCESS_ASSET_FACES_JOB_NAME, *args)
+
+
+async def enqueue_asset_thumbnail_batch_job(
+    items: list[dict[str, str | None]],
+) -> bool:
+    return await enqueue_worker_job(PROCESS_ASSET_THUMBNAIL_BATCH_JOB_NAME, items)
+
+
+async def enqueue_asset_embedding_batch_job(
+    items: list[dict[str, str | None]],
+    *,
+    force: bool = False,
+) -> bool:
+    return await enqueue_worker_job(
+        GENERATE_ASSET_CLIP_EMBEDDING_BATCH_JOB_NAME,
+        items,
+        force,
+    )
+
+
+async def enqueue_asset_faces_batch_job(
+    items: list[dict[str, str | None]],
+    *,
+    force: bool = False,
+    auto_match: bool = True,
+) -> bool:
+    return await enqueue_worker_job(
+        PROCESS_ASSET_FACES_BATCH_JOB_NAME,
+        items,
+        force,
+        auto_match,
+    )
 
 
 async def enqueue_manual_job_run(job_id: UUID) -> bool:

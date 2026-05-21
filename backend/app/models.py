@@ -239,23 +239,32 @@ class Job(SQLModel, table=True):
     )
 
 
-class AssetAIProcessing(SQLModel, table=True):
-    __tablename__ = "asset_ai_processing"
+class AssetProcessing(SQLModel, table=True):
+    __tablename__ = "asset_processing"
     __table_args__ = (
-        UniqueConstraint(
+        Index(
+            "uq_asset_processing_asset_task_null_model",
+            "asset_id",
+            "task",
+            unique=True,
+            postgresql_where=text("ai_model_id IS NULL"),
+        ),
+        Index(
+            "uq_asset_processing_asset_model_task",
             "asset_id",
             "ai_model_id",
             "task",
-            name="uq_asset_ai_processing_asset_model_task",
+            unique=True,
+            postgresql_where=text("ai_model_id IS NOT NULL"),
         ),
         Index(
-            "idx_asset_ai_processing_task_model_status",
+            "idx_asset_processing_task_model_status",
             "task",
             "ai_model_id",
             "status",
         ),
-        Index("idx_asset_ai_processing_asset_task", "asset_id", "task"),
-        Index("idx_asset_ai_processing_last_job_id", "last_job_id"),
+        Index("idx_asset_processing_asset_task", "asset_id", "task"),
+        Index("idx_asset_processing_last_job_id", "last_job_id"),
     )
 
     id: UUID = Field(
@@ -269,11 +278,12 @@ class AssetAIProcessing(SQLModel, table=True):
             nullable=False,
         ),
     )
-    ai_model_id: int = Field(
+    ai_model_id: int | None = Field(
+        default=None,
         sa_column=Column(
             Integer,
             ForeignKey("ai_models.id", ondelete="RESTRICT"),
-            nullable=False,
+            nullable=True,
         ),
     )
     task: str = Field(sa_column=Column(Text, nullable=False))

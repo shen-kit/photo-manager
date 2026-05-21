@@ -133,6 +133,23 @@ class JobService:
         )
         return self.session.exec(statement).first()
 
+    def find_active_job_for_asset(
+        self,
+        *,
+        job_key: str,
+        related_asset_id: UUID,
+    ) -> Job | None:
+        statement = (
+            select(Job)
+            .where(
+                Job.job_key == job_key,
+                Job.related_asset_id == related_asset_id,
+                Job.status.in_(ACTIVE_JOB_STATUSES),
+            )
+            .order_by(Job.created_at.desc())
+        )
+        return self.session.exec(statement).first()
+
     def get_latest_visible_job_by_key(self, *, job_key: str) -> Job | None:
         statement = (
             select(Job)

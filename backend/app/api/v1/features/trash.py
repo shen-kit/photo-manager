@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from app.core.auth import get_current_user
 from app.models import Asset, User
-from app.api.v1.features.assets.router import _detail_image_url, _thumbnail_url
+from app.api.v1.features.assets.router import _preview_url, _thumbnail_url
 from app.services.trash.schemas import (
     RestoredAssetDetailResponse,
     TrashAssetDetailResponse,
@@ -126,7 +126,7 @@ def _build_trash_detail(
         tags=_build_tag_models(tags),
         people=_build_people_models(faces),
         faces=_build_face_models(faces),
-        large_preview_url=_detail_image_url(request, asset),
+        preview_url=_preview_url(request, asset),
         created_at=asset.created_at,
     )
 
@@ -158,7 +158,7 @@ def _build_restore_response(
             tags=_build_tag_models(result.tags),
             people=_build_people_models(result.faces),
             faces=_build_face_models(result.faces),
-            large_preview_url=_detail_image_url(request, result.asset),
+            preview_url=_preview_url(request, result.asset),
             created_at=result.asset.created_at,
         ),
         jobs=TrashRestoreJobSummary(

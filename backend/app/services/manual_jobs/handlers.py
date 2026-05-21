@@ -15,22 +15,20 @@ from app.services.ai_models.repository import (
     AIModelConfigurationError,
     AIModelRepository,
 )
-from app.services.ai_processing.service import AIProcessingTrackerService
+from app.services.asset_processing.service import AssetProcessingTrackerService
 from app.services.assets.media import (
     canonical_original_path,
-    is_supported_video_mime_type,
     master_path_to_source_path,
     processed_asset_dir,
-    processed_video_preview_path,
     source_path_to_master_path,
 )
 from app.services.assets.scan import scan_originals_library
 from app.services.embeddings.service import EmbeddingService
 from app.services.faces.service import FaceProcessingService
 from app.services.jobs.queue import (
-    enqueue_asset_embedding_job,
-    enqueue_asset_faces_job,
-    enqueue_asset_processing_job,
+    enqueue_asset_embedding_batch_job,
+    enqueue_asset_faces_batch_job,
+    enqueue_asset_thumbnail_batch_job,
 )
 from app.services.jobs.service import JobService
 from app.services.people.repository import PeopleRepository
@@ -49,11 +47,6 @@ def _asset_missing_processed_files(asset: Asset) -> bool:
         return True
     if not (asset_dir / "small.webp").is_file():
         return True
-    if asset.has_large_preview and not (asset_dir / "large.webp").is_file():
-        return True
-    if is_supported_video_mime_type(asset.mime_type):
-        if not processed_video_preview_path(asset.id).is_file():
-            return True
     return False
 
 
@@ -334,7 +327,9 @@ class RegenerateMissingAssetThumbnailsManualJobHandler(ManualJobHandler):
         parent_job: Job,
         prepared_run: ManualJobPreparedRun,
     ) -> None:
-        self.job_service.update_progress(parent_job.id, total=prepared_run.progress_total)
+        self.job_service.update_progress(
+            parent_job.id, total=prepared_run.progress_total
+        )
         parent_job.progress_message = "Scheduling asset thumbnail regeneration"
         self.session.add(parent_job)
         self.session.commit()
@@ -354,28 +349,40 @@ class RegenerateMissingAssetThumbnailsManualJobHandler(ManualJobHandler):
             if existing_child is not None:
                 continue
             child = self.job_service.create_job(
-                "process_asset_metadata",
-                parameters={
-                    "asset_id": str(asset_id),
-                    "enqueue_embedding": False,
-                    "enqueue_faces": False,
-                },
+                "process_asset_thumbnail_batch_item",
+                parameters={"asset_id": str(asset_id)},
                 job_key=parent_job.job_key,
                 parent_job_id=parent_job.id,
                 related_asset_id=asset_id,
                 is_visible=False,
             )
-            queued = await enqueue_asset_processing_job(
-                asset_id,
-                job_id=child.id,
-                parent_job_id=parent_job.id,
-                enqueue_embedding=False,
-                enqueue_faces=False,
-            )
-            if not queued:
+        queued = await enqueue_asset_thumbnail_batch_job(
+            [
+                {"asset_id": str(asset_id), "job_id": str(child.id)}
+                for asset_id, child in [
+                    (
+                        asset_id,
+                        self.job_service.get_child_job_for_asset(
+                            parent_job_id=parent_job.id,
+                            related_asset_id=asset_id,
+                        ),
+                    )
+                    for asset_id in asset_ids
+                ]
+                if child is not None
+            ]
+        )
+        if not queued:
+            for asset_id in asset_ids:
+                child = self.job_service.get_child_job_for_asset(
+                    parent_job_id=parent_job.id,
+                    related_asset_id=asset_id,
+                )
+                if child is None:
+                    continue
                 self.job_service.fail_job(
                     child.id,
-                    "Failed to enqueue asset metadata job",
+                    "Failed to enqueue thumbnail batch job",
                     result={"asset_id": str(asset_id), "skipped": False},
                 )
 
@@ -661,7 +668,7 @@ class RunMissingOrOutdatedClipEmbeddingsManualJobHandler(ManualJobHandler):
         super().__init__(session)
         self.embedding_service = EmbeddingService(session)
         self.ai_model_repository = AIModelRepository(session)
-        self.tracker = AIProcessingTrackerService(session)
+        self.tracker = AssetProcessingTrackerService(session)
 
     def _candidate_asset_ids(self) -> tuple[int, list[UUID]]:
         return self.embedding_service.list_missing_asset_ids(force=False)
@@ -689,7 +696,9 @@ class RunMissingOrOutdatedClipEmbeddingsManualJobHandler(ManualJobHandler):
         parent_job: Job,
         prepared_run: ManualJobPreparedRun,
     ) -> None:
-        self.job_service.update_progress(parent_job.id, total=prepared_run.progress_total)
+        self.job_service.update_progress(
+            parent_job.id, total=prepared_run.progress_total
+        )
         self.job_service.mark_running(
             parent_job.id, message="Scheduling CLIP embedding jobs"
         )
@@ -725,22 +734,44 @@ class RunMissingOrOutdatedClipEmbeddingsManualJobHandler(ManualJobHandler):
                 task=AI_MODEL_TASK_CLIP_EMBEDDING,
                 job_id=child.id,
             )
-            queued = await enqueue_asset_embedding_job(
-                asset_id,
-                force=force,
-                job_id=child.id,
-            )
-            if not queued:
+        queued = await enqueue_asset_embedding_batch_job(
+            [
+                {
+                    "asset_id": str(asset_id),
+                    "job_id": str(
+                        self.job_service.get_child_job_for_asset(
+                            parent_job_id=parent_job.id,
+                            related_asset_id=asset_id,
+                        ).id
+                    ),
+                }
+                for asset_id in asset_ids
+                if self.job_service.get_child_job_for_asset(
+                    parent_job_id=parent_job.id,
+                    related_asset_id=asset_id,
+                )
+                is not None
+            ],
+            force=force,
+        )
+        if not queued:
+            for asset_id in asset_ids:
+                child = self.job_service.get_child_job_for_asset(
+                    parent_job_id=parent_job.id,
+                    related_asset_id=asset_id,
+                )
+                if child is None:
+                    continue
                 self.tracker.mark_failed(
                     asset_id=asset_id,
                     ai_model_id=clip_model.id,
                     task=AI_MODEL_TASK_CLIP_EMBEDDING,
                     job_id=child.id,
-                    error_message="Failed to enqueue CLIP embedding job",
+                    error_message="Failed to enqueue CLIP embedding batch job",
                 )
                 self.job_service.fail_job(
                     child.id,
-                    "Failed to enqueue CLIP embedding job",
+                    "Failed to enqueue CLIP embedding batch job",
                     result={"asset_id": str(asset_id), "skipped": False},
                 )
 
@@ -801,7 +832,7 @@ class RunMissingOrOutdatedFaceRecognitionManualJobHandler(ManualJobHandler):
         super().__init__(session)
         self.face_service = FaceProcessingService(session)
         self.ai_model_repository = AIModelRepository(session)
-        self.tracker = AIProcessingTrackerService(session)
+        self.tracker = AssetProcessingTrackerService(session)
 
     def _candidate_asset_ids(self) -> tuple[int, list[UUID]]:
         return self.face_service.list_asset_ids_pending_face_processing(force=False)
@@ -837,7 +868,9 @@ class RunMissingOrOutdatedFaceRecognitionManualJobHandler(ManualJobHandler):
         parent_job: Job,
         prepared_run: ManualJobPreparedRun,
     ) -> None:
-        self.job_service.update_progress(parent_job.id, total=prepared_run.progress_total)
+        self.job_service.update_progress(
+            parent_job.id, total=prepared_run.progress_total
+        )
         self.job_service.mark_running(
             parent_job.id, message="Scheduling face recognition jobs"
         )
@@ -878,23 +911,45 @@ class RunMissingOrOutdatedFaceRecognitionManualJobHandler(ManualJobHandler):
                 task=AI_MODEL_TASK_FACE_RECOGNITION,
                 job_id=child.id,
             )
-            queued = await enqueue_asset_faces_job(
-                asset_id,
-                force=force,
-                auto_match=auto_match,
-                job_id=child.id,
-            )
-            if not queued:
+        queued = await enqueue_asset_faces_batch_job(
+            [
+                {
+                    "asset_id": str(asset_id),
+                    "job_id": str(
+                        self.job_service.get_child_job_for_asset(
+                            parent_job_id=parent_job.id,
+                            related_asset_id=asset_id,
+                        ).id
+                    ),
+                }
+                for asset_id in asset_ids
+                if self.job_service.get_child_job_for_asset(
+                    parent_job_id=parent_job.id,
+                    related_asset_id=asset_id,
+                )
+                is not None
+            ],
+            force=force,
+            auto_match=auto_match,
+        )
+        if not queued:
+            for asset_id in asset_ids:
+                child = self.job_service.get_child_job_for_asset(
+                    parent_job_id=parent_job.id,
+                    related_asset_id=asset_id,
+                )
+                if child is None:
+                    continue
                 self.tracker.mark_failed(
                     asset_id=asset_id,
                     ai_model_id=face_model.id,
                     task=AI_MODEL_TASK_FACE_RECOGNITION,
                     job_id=child.id,
-                    error_message="Failed to enqueue face recognition job",
+                    error_message="Failed to enqueue face recognition batch job",
                 )
                 self.job_service.fail_job(
                     child.id,
-                    "Failed to enqueue face recognition job",
+                    "Failed to enqueue face recognition batch job",
                     result={"asset_id": str(asset_id), "skipped": False},
                 )
 

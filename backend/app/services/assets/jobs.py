@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
-from pathlib import Path
 from uuid import UUID
 
 from PIL import Image, ImageOps
@@ -10,29 +9,25 @@ from sqlmodel import Session
 
 from app.core.database import engine
 from app.models import Asset
-from app.services.jobs.queue import enqueue_asset_embedding_job
-from app.services.jobs.queue import enqueue_asset_faces_job
-from app.services.jobs.queue import enqueue_asset_processing_job
-from app.services.jobs.service import JobService
-from app.services.manual_jobs.service import ManualJobService
-from app.services.notifications.service import NotificationService
-from app.services.notifications.types import NotificationCategory, NotificationLevel
+from app.services.assets.batching import (
+    EmbeddingBatchProcessor,
+    FaceBatchProcessor,
+    ThumbnailBatchProcessor,
+    parse_batch_items,
+)
 from app.services.assets.media import (
-    VIDEO_PREVIEW_STATUS_FAILED,
-    VIDEO_PREVIEW_STATUS_PROCESSING,
-    VIDEO_PREVIEW_STATUS_READY,
-    build_fast_variants,
+    VIDEO_PREVIEW_STATUS_PENDING,
     inspect_video,
     is_supported_image_mime_type,
     is_supported_video_mime_type,
     master_path_to_source_path,
-    processed_asset_dir,
-    processed_video_preview_path,
-    should_generate_large_preview,
-    should_generate_small_in_api,
-    write_asset_variants,
-    write_video_preview,
 )
+from app.services.assets.preview import AssetPreviewService
+from app.services.assets.preview import IMAGE_PREVIEW_TASK, VIDEO_PREVIEW_TASK
+from app.services.jobs.context import JobNotification, JobTaskContext
+from app.services.jobs.queue import enqueue_asset_embedding_job, enqueue_asset_faces_job
+from app.services.notifications.types import NotificationCategory, NotificationLevel
+from app.services.asset_processing.service import AssetProcessingTrackerService
 
 EXIF_DATETIME_TAGS = ("36867", "306")
 EXIF_OFFSET_TAGS = ("36881", "36880", "36882")
@@ -43,29 +38,26 @@ def _extract_exif_data(image: Image.Image) -> dict[str, str]:
     exif = image.getexif()
     if not exif:
         return {}
-
-    extracted: dict[str, str] = {}
-    for tag_id, value in exif.items():
-        extracted[str(tag_id)] = str(value)
-    return extracted
+    return {str(tag_id): str(value) for tag_id, value in exif.items()}
 
 
 def _parse_captured_timestamps(
     exif_data: dict[str, str],
 ) -> tuple[datetime | None, str | None]:
     raw_timestamp = next(
-        (exif_data[tag] for tag in EXIF_DATETIME_TAGS if exif_data.get(tag)), None
+        (exif_data[tag] for tag in EXIF_DATETIME_TAGS if exif_data.get(tag)),
+        None,
     )
     if raw_timestamp is None:
         return None, None
-
     try:
         local_naive = datetime.strptime(raw_timestamp, "%Y:%m:%d %H:%M:%S")
     except ValueError:
         return None, None
 
     raw_offset = next(
-        (exif_data[tag].strip() for tag in EXIF_OFFSET_TAGS if exif_data.get(tag)), None
+        (exif_data[tag].strip() for tag in EXIF_OFFSET_TAGS if exif_data.get(tag)),
+        None,
     )
     if raw_offset:
         normalized_offset = raw_offset.replace("Z", "+00:00")
@@ -76,49 +68,7 @@ def _parse_captured_timestamps(
         except ValueError:
             return local_naive.replace(tzinfo=UTC), local_naive.isoformat()
         return local_with_offset.astimezone(UTC), local_with_offset.isoformat()
-
     return local_naive.replace(tzinfo=UTC), local_naive.isoformat()
-
-
-def _remove_large_preview(asset_id: UUID) -> None:
-    large_path = processed_asset_dir(asset_id) / "large.webp"
-    large_path.unlink(missing_ok=True)
-
-
-def _remove_video_preview(asset_id: UUID) -> None:
-    processed_video_preview_path(asset_id).unlink(missing_ok=True)
-
-
-def _ensure_fast_artifacts(asset: Asset, original_path: Path) -> None:
-    include_small = is_supported_video_mime_type(
-        asset.mime_type
-    ) or should_generate_small_in_api(asset.mime_type, asset.file_size_bytes or 0)
-    output_dir = processed_asset_dir(asset.id)
-    tiny_path = output_dir / "tiny.webp"
-    small_path = output_dir / "small.webp"
-
-    if tiny_path.is_file() and asset.blurhash is not None:
-        if not include_small or small_path.is_file():
-            return
-
-    asset.blurhash = build_fast_variants(
-        original_path,
-        asset.id,
-        include_small=include_small,
-        mime_type=asset.mime_type,
-    )
-
-
-def _update_parent_job_message(
-    *, session: Session, related_job_id: UUID | None, message: str
-) -> None:
-    if related_job_id is None:
-        return
-    job_service = JobService(session)
-    job = job_service.get_job(related_job_id)
-    if job.status != "running":
-        return
-    job_service.update_progress(related_job_id, message=message)
 
 
 async def process_asset_metadata(
@@ -129,235 +79,176 @@ async def process_asset_metadata(
     enqueue_embedding: bool = True,
     enqueue_faces: bool = True,
 ) -> None:
-    task_job_id = UUID(job_id) if job_id else None
-    related_job_id = UUID(parent_job_id) if parent_job_id else None
-    notification_job_id = related_job_id or task_job_id
+    del parent_job_id
+    asset_uuid = UUID(asset_id)
+    job_uuid = UUID(job_id) if job_id else None
     with Session(engine) as session:
-        job_service = JobService(session)
-        manual_job_service = ManualJobService(session)
-        notification_service = NotificationService(session)
-        if task_job_id is not None:
-            job_service.mark_running(task_job_id, message="Processing asset metadata")
-
-        def notify_processing_error(
-            *,
-            message: str,
-            asset_id_value: UUID | None = None,
-            details: dict[str, str] | None = None,
-        ) -> None:
-            notification_service.create_notification(
-                level=NotificationLevel.ERROR,
-                category=NotificationCategory.ASSET,
-                title="Asset processing failed",
-                message=message,
-                details=details,
-                related_job_id=notification_job_id,
-                related_asset_id=asset_id_value,
-            )
-
-        def fail_task_job(
-            message: str, *, result: dict[str, object] | None = None
-        ) -> None:
-            if task_job_id is None:
-                return
-            job_service.fail_job(task_job_id, message, result=result)
-            manual_job_service.on_child_job_terminal(task_job_id)
-
-        asset = session.get(Asset, UUID(asset_id))
+        job_context = JobTaskContext(session, job_id=job_uuid)
+        thumbnail_processor = ThumbnailBatchProcessor(session)
+        job_context.mark_running("Processing asset metadata")
+        asset = session.get(Asset, asset_uuid)
         if asset is None:
-            logger.warning("Asset %s disappeared before metadata processing", asset_id)
-            if related_job_id is not None:
-                _update_parent_job_message(
-                    session=session,
-                    related_job_id=related_job_id,
-                    message="A background asset could not be processed.",
-                )
-                notify_processing_error(
-                    message="The asset no longer exists for metadata processing.",
-                    details={"asset_id": asset_id},
-                )
-            fail_task_job(
+            job_context.fail(
                 "The asset no longer exists for metadata processing.",
                 result={"asset_id": asset_id, "skipped": False},
             )
             return
-
         try:
-            original_path = master_path_to_source_path(asset.master_path)
-        except ValueError:
-            logger.warning(
-                "Asset %s has invalid master path %s", asset.id, asset.master_path
-            )
-            _update_parent_job_message(
-                session=session,
-                related_job_id=related_job_id,
-                message="A background asset could not be processed.",
-            )
-            notify_processing_error(
-                message="The asset source path is invalid.",
-                asset_id_value=asset.id,
-                details={"master_path": asset.master_path},
-            )
-            fail_task_job(
-                "The asset source path is invalid.",
-                result={"asset_id": asset_id, "skipped": False},
-            )
-            return
-        if not original_path.is_file():
-            logger.warning(
-                "Asset %s source file is missing at %s", asset.id, original_path
-            )
-            _update_parent_job_message(
-                session=session,
-                related_job_id=related_job_id,
-                message="A background asset could not be processed.",
-            )
-            notify_processing_error(
-                message="The asset source file is missing.",
-                asset_id_value=asset.id,
-                details={"master_path": asset.master_path},
-            )
-            fail_task_job(
-                "The asset source file is missing.",
-                result={"asset_id": asset_id, "skipped": False},
-            )
-            return
-
-        if is_supported_video_mime_type(asset.mime_type):
-            exif_data = {}
-        else:
-            try:
-                with Image.open(original_path) as image:
+            source_path = master_path_to_source_path(asset.master_path)
+            if not source_path.is_file():
+                raise FileNotFoundError(f"Source file missing for asset {asset.id}")
+            if is_supported_video_mime_type(asset.mime_type):
+                asset.exif_data = None
+                video_metadata = inspect_video(source_path)
+                asset.width = video_metadata.width
+                asset.height = video_metadata.height
+                asset.video_codec = video_metadata.video_codec
+                asset.audio_codec = video_metadata.audio_codec
+                asset.duration_seconds = video_metadata.duration_seconds
+                asset.preview_status = VIDEO_PREVIEW_STATUS_PENDING
+            else:
+                with Image.open(source_path) as image:
                     normalized = ImageOps.exif_transpose(image)
                     exif_data = _extract_exif_data(normalized)
-            except Exception:
-                exif_data = {}
-
-        asset.exif_data = exif_data or None
-        parsed_captured_at, parsed_captured_at_local = _parse_captured_timestamps(
-            exif_data
-        )
-        if asset.captured_at is None and parsed_captured_at is not None:
-            asset.captured_at = parsed_captured_at
-        if asset.captured_at_local is None and parsed_captured_at_local is not None:
-            asset.captured_at_local = parsed_captured_at_local
-
-        _ensure_fast_artifacts(asset, original_path)
-
-        if is_supported_video_mime_type(asset.mime_type):
-            try:
-                video_metadata = inspect_video(original_path)
-            except ValueError:
-                asset.preview_status = VIDEO_PREVIEW_STATUS_FAILED
-                _remove_video_preview(asset.id)
-                session.add(asset)
-                session.commit()
-                _update_parent_job_message(
-                    session=session,
-                    related_job_id=related_job_id,
-                    message="A background asset could not be processed.",
+                asset.exif_data = exif_data or None
+                parsed_captured_at, parsed_captured_at_local = (
+                    _parse_captured_timestamps(exif_data)
                 )
-                notify_processing_error(
-                    message="Video metadata inspection failed.",
-                    asset_id_value=asset.id,
-                    details={"master_path": asset.master_path},
-                )
-                fail_task_job(
-                    "Video metadata inspection failed.",
-                    result={"asset_id": asset_id, "skipped": False},
-                )
-                return
-            asset.width = video_metadata.width
-            asset.height = video_metadata.height
-            asset.video_codec = video_metadata.video_codec
-            asset.audio_codec = video_metadata.audio_codec
-            asset.duration_seconds = video_metadata.duration_seconds
-            asset.preview_status = VIDEO_PREVIEW_STATUS_PROCESSING
+                if asset.captured_at is None and parsed_captured_at is not None:
+                    asset.captured_at = parsed_captured_at
+                if (
+                    asset.captured_at_local is None
+                    and parsed_captured_at_local is not None
+                ):
+                    asset.captured_at_local = parsed_captured_at_local
             session.add(asset)
             session.commit()
-        if not should_generate_small_in_api(
-            asset.mime_type, asset.file_size_bytes or 0
-        ):
-            write_asset_variants(original_path, asset.id, ("small",), asset.mime_type)
+            thumbnail_processor.ensure_asset_thumbnails(asset.id)
+        except Exception as exc:
+            logger.warning(
+                "Asset metadata processing failed for %s: %s", asset_uuid, exc
+            )
+            job_context.fail(
+                str(exc),
+                result={"asset_id": asset_id, "skipped": False},
+                notification=JobNotification(
+                    level=NotificationLevel.ERROR,
+                    category=NotificationCategory.ASSET,
+                    title="Asset processing failed",
+                    message=str(exc),
+                    details={"asset_id": asset_id},
+                    related_asset_id=asset_uuid,
+                ),
+            )
+            return
 
-        asset.has_large_preview = should_generate_large_preview(
-            asset.width, asset.height
-        )
-        if asset.has_large_preview:
-            write_asset_variants(original_path, asset.id, ("large",), asset.mime_type)
-        else:
-            _remove_large_preview(asset.id)
-        if is_supported_video_mime_type(asset.mime_type):
-            try:
-                write_video_preview(original_path, asset.id)
-            except Exception:
-                asset.preview_status = VIDEO_PREVIEW_STATUS_FAILED
-                _remove_video_preview(asset.id)
-                session.add(asset)
-                session.commit()
-                logger.exception(
-                    "Failed to generate video preview for asset %s", asset.id
-                )
-                _update_parent_job_message(
-                    session=session,
-                    related_job_id=related_job_id,
-                    message="A background asset could not be processed.",
-                )
-                notify_processing_error(
-                    message="Video preview generation failed.",
-                    asset_id_value=asset.id,
-                    details={"master_path": asset.master_path},
-                )
-                fail_task_job(
-                    "Video preview generation failed.",
-                    result={"asset_id": asset_id, "skipped": False},
-                )
-                return
-            asset.preview_status = VIDEO_PREVIEW_STATUS_READY
-
-        session.add(asset)
-        session.commit()
+        queued_embedding_job = False
+        queued_face_job = False
         if enqueue_embedding:
             queued_embedding_job = await enqueue_asset_embedding_job(asset.id)
-            if not queued_embedding_job:
-                logger.warning(
-                    "Failed to enqueue CLIP embedding job for asset %s", asset.id
-                )
-                notification_service.create_notification(
-                    level=NotificationLevel.WARNING,
-                    category=NotificationCategory.SEARCH,
-                    title="Embedding job failed to queue",
-                    message="The asset metadata was processed, but semantic embedding generation was not queued.",
-                    related_job_id=notification_job_id,
-                    related_asset_id=asset.id,
-                    details={"asset_id": str(asset.id)},
-                )
         if enqueue_faces and is_supported_image_mime_type(asset.mime_type):
             queued_face_job = await enqueue_asset_faces_job(asset.id)
-            if not queued_face_job:
-                logger.warning(
-                    "Failed to enqueue face processing job for asset %s", asset.id
+        job_context.complete(
+            "Asset metadata processed",
+            result={
+                "asset_id": asset_id,
+                "processed": True,
+                "skipped": False,
+                "queued_embedding_job": queued_embedding_job,
+                "queued_face_job": queued_face_job,
+            },
+        )
+
+
+async def process_asset_thumbnail_batch(
+    _: dict[str, object],
+    items: list[dict[str, str | None]],
+) -> None:
+    parsed_items = parse_batch_items(items)
+    with Session(engine) as session:
+        processor = ThumbnailBatchProcessor(session)
+        results = processor.process_batch(parsed_items)
+        for item in parsed_items:
+            if item.job_id is None:
+                continue
+            job_context = JobTaskContext(session, job_id=item.job_id)
+            error = results[item.asset_id]
+            if error is None:
+                job_context.complete(
+                    "Asset thumbnails processed",
+                    result={"asset_id": str(item.asset_id), "skipped": False},
                 )
-                notification_service.create_notification(
-                    level=NotificationLevel.WARNING,
-                    category=NotificationCategory.FACE,
-                    title="Face processing job failed to queue",
-                    message="The asset metadata was processed, but face processing was not queued.",
-                    related_job_id=notification_job_id,
-                    related_asset_id=asset.id,
-                    details={"asset_id": str(asset.id)},
+            else:
+                job_context.fail(
+                    str(error),
+                    result={"asset_id": str(item.asset_id), "skipped": False},
                 )
-        if task_job_id is not None:
-            job_service.complete_job(
-                task_job_id,
-                result={
-                    "asset_id": asset_id,
-                    "processed": True,
-                    "skipped": False,
-                    "queued_embedding_job": enqueue_embedding,
-                    "queued_face_job": enqueue_faces
-                    and is_supported_image_mime_type(asset.mime_type),
-                },
-                message="Asset metadata processed",
+
+
+async def generate_asset_preview(
+    _: dict[str, object],
+    asset_id: str,
+    job_id: str | None = None,
+) -> None:
+    asset_uuid = UUID(asset_id)
+    job_uuid = UUID(job_id) if job_id else None
+    with Session(engine) as session:
+        job_context = JobTaskContext(session, job_id=job_uuid)
+        service = AssetPreviewService(session)
+        tracker = AssetProcessingTrackerService(session)
+        job_context.mark_running("Generating asset preview")
+        try:
+            asset = session.get(Asset, asset_uuid)
+            if asset is None:
+                raise RuntimeError(f"Asset {asset_id} not found")
+            task = (
+                VIDEO_PREVIEW_TASK
+                if is_supported_video_mime_type(asset.mime_type)
+                else IMAGE_PREVIEW_TASK
             )
-            manual_job_service.on_child_job_terminal(task_job_id)
+            tracker.mark_running(
+                asset_id=asset_uuid,
+                ai_model_id=None,
+                task=task,
+                job_id=job_uuid,
+            )
+            if is_supported_video_mime_type(asset.mime_type):
+                preview_path = service.generate_video_preview(asset_uuid)
+            else:
+                preview_path = service.generate_image_preview(asset_uuid)
+        except Exception as exc:
+            logger.warning(
+                "Preview generation failed for asset %s: %s", asset_uuid, exc
+            )
+            if "task" in locals():
+                tracker.mark_failed(
+                    asset_id=asset_uuid,
+                    ai_model_id=None,
+                    task=task,
+                    job_id=job_uuid,
+                    error_message=str(exc),
+                )
+            job_context.fail(
+                str(exc),
+                result={"asset_id": asset_id, "skipped": False},
+                notification=JobNotification(
+                    level=NotificationLevel.ERROR,
+                    category=NotificationCategory.ASSET,
+                    title="Preview generation failed",
+                    message=str(exc),
+                    details={"asset_id": asset_id},
+                    related_asset_id=asset_uuid,
+                ),
+            )
+            return
+        tracker.mark_completed(
+            asset_id=asset_uuid,
+            ai_model_id=None,
+            task=task,
+            job_id=job_uuid,
+            output_count=1,
+        )
+        job_context.complete(
+            "Asset preview generated",
+            result={"asset_id": asset_id, "preview_path": str(preview_path)},
+        )

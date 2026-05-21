@@ -73,9 +73,7 @@ class _FakeManualJobService:
 
     async def run_manual_job(self, *, job_key, request, requested_by_user_id=None):
         del requested_by_user_id
-        self.run_calls.append(
-            (job_key, request.params if request else None)
-        )
+        self.run_calls.append((job_key, request.params if request else None))
         return self.job
 
     def build_job_detail(self, job_id, *, include_children):
@@ -150,9 +148,7 @@ class JobsApiTest(unittest.TestCase):
         response = asyncio.run(
             run_manual_job(
                 job_key="run_missing_or_outdated_face_recognition",
-                payload=ManualJobRunRequest(
-                    params={"force": True, "auto_match": True}
-                ),
+                payload=ManualJobRunRequest(params={"force": True, "auto_match": True}),
                 manual_job_service=service,
                 current_user=self.user,
             )

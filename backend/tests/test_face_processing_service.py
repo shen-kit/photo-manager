@@ -66,7 +66,7 @@ class _FakeFaceRepository:
         return []
 
 
-class _FakeAIProcessingRepository:
+class _FakeAssetProcessingRepository:
     def __init__(self, *, completed: bool = False) -> None:
         self.completed = completed
 
@@ -139,7 +139,7 @@ class FaceProcessingServiceTest(unittest.TestCase):
             service = FaceProcessingService(
                 session=None,
                 repository=repo,
-                ai_processing_repository=_FakeAIProcessingRepository(),
+                asset_processing_repository=_FakeAssetProcessingRepository(),
                 ai_model_repository=_FakeAIModelRepository(self._model()),
                 detector=lambda path: detector_calls.append(path) or [],
             )
@@ -181,7 +181,7 @@ class FaceProcessingServiceTest(unittest.TestCase):
             service = FaceProcessingService(
                 session=None,
                 repository=repo,
-                ai_processing_repository=_FakeAIProcessingRepository(),
+                asset_processing_repository=_FakeAssetProcessingRepository(),
                 ai_model_repository=_FakeAIModelRepository(self._model()),
                 detector=lambda path: [self._face(1, 2), self._face(30, 20)],
             )
@@ -214,7 +214,7 @@ class FaceProcessingServiceTest(unittest.TestCase):
             service = FaceProcessingService(
                 session=None,
                 repository=repo,
-                ai_processing_repository=_FakeAIProcessingRepository(),
+                asset_processing_repository=_FakeAssetProcessingRepository(),
                 ai_model_repository=_FakeAIModelRepository(self._model()),
                 detector=lambda path: detector_calls.append(path) or [],
             )
@@ -240,7 +240,7 @@ class FaceProcessingServiceTest(unittest.TestCase):
             service = FaceProcessingService(
                 session=None,
                 repository=repo,
-                ai_processing_repository=_FakeAIProcessingRepository(),
+                asset_processing_repository=_FakeAssetProcessingRepository(),
                 ai_model_repository=_FakeAIModelRepository(self._model(model_id=42)),
                 detector=lambda path: [self._face(5, 6)],
             )
@@ -265,7 +265,7 @@ class FaceProcessingServiceTest(unittest.TestCase):
             service = FaceProcessingService(
                 session=None,
                 repository=repo,
-                ai_processing_repository=_FakeAIProcessingRepository(),
+                asset_processing_repository=_FakeAssetProcessingRepository(),
                 ai_model_repository=_FakeAIModelRepository(self._model()),
                 detector=lambda path: [self._face(5, 6)],
             )
@@ -287,7 +287,9 @@ class FaceProcessingServiceTest(unittest.TestCase):
             service = FaceProcessingService(
                 session=None,
                 repository=repo,
-                ai_processing_repository=_FakeAIProcessingRepository(completed=True),
+                asset_processing_repository=_FakeAssetProcessingRepository(
+                    completed=True
+                ),
                 ai_model_repository=_FakeAIModelRepository(self._model()),
                 detector=lambda path: detector_calls.append(path) or [self._face(5, 6)],
             )
@@ -309,7 +311,7 @@ class FaceProcessingServiceTest(unittest.TestCase):
             service = FaceProcessingService(
                 session=None,
                 repository=repo,
-                ai_processing_repository=_FakeAIProcessingRepository(),
+                asset_processing_repository=_FakeAssetProcessingRepository(),
                 ai_model_repository=_FakeAIModelRepository(self._model()),
                 detector=provider,
             )

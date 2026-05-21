@@ -14,15 +14,12 @@ from fastapi import (
     UploadFile,
     status,
 )
+from fastapi.responses import FileResponse, JSONResponse
 from sqlmodel import Field, SQLModel
 
 from app.core.auth import get_current_user
 from app.models import Asset, User
-from app.services.assets.media import (
-    MEDIA_PROCESSED_DIR,
-    is_supported_video_mime_type,
-    processed_video_preview_path,
-)
+from app.services.assets.preview import AssetPreviewService
 from app.services.assets.service import AssetService, get_asset_service
 
 router = APIRouter()
@@ -91,7 +88,7 @@ class AssetDetailResponse(SQLModel):
     tags: list[TagSummary] = Field(default_factory=list)
     people: list[PersonSummary] = Field(default_factory=list)
     faces: list[FaceSummary] = Field(default_factory=list)
-    large_preview_url: str
+    preview_url: str
     created_at: datetime
 
 
@@ -109,7 +106,7 @@ class AssetIngestResponse(SQLModel):
     preview_status: str | None = None
     tiny_thumbnail_url: str
     small_thumbnail_url: str
-    large_preview_url: str
+    preview_url: str
     blurhash: str | None = None
     queued_job: bool
 
@@ -127,25 +124,8 @@ def _thumbnail_url(request: Request, asset_id: UUID, variant: str) -> str:
     )
 
 
-def _original_asset_url(request: Request, master_path: str) -> str:
-    base_url = str(request.base_url).rstrip("/")
-    normalized = master_path.lstrip("/")
-    return f"{base_url}/media/originals/{normalized}"
-
-
-def _detail_image_url(request: Request, asset: Asset) -> str:
-    if is_supported_video_mime_type(asset.mime_type):
-        relative_preview = (
-            processed_video_preview_path(asset.id)
-            .relative_to(MEDIA_PROCESSED_DIR)
-            .as_posix()
-        )
-        return (
-            str(request.base_url).rstrip("/") + f"/media/processed/{relative_preview}"
-        )
-    if asset.has_large_preview:
-        return _thumbnail_url(request, asset.id, "large")
-    return _original_asset_url(request, asset.master_path)
+def _preview_url(request: Request, asset: Asset) -> str:
+    return str(request.base_url).rstrip("/") + f"/api/v1/assets/{asset.id}/preview"
 
 
 def _build_ingest_response(
@@ -165,7 +145,7 @@ def _build_ingest_response(
         preview_status=asset.preview_status,
         tiny_thumbnail_url=_thumbnail_url(request, asset.id, "tiny"),
         small_thumbnail_url=_thumbnail_url(request, asset.id, "small"),
-        large_preview_url=_detail_image_url(request, asset),
+        preview_url=_preview_url(request, asset),
         blurhash=asset.blurhash,
         queued_job=queued_job,
     )
@@ -199,7 +179,7 @@ def _build_detail_response(
         tags=_build_tag_models(tags),
         people=_build_people_models(faces),
         faces=_build_face_models(faces),
-        large_preview_url=_detail_image_url(request, asset),
+        preview_url=_preview_url(request, asset),
         created_at=asset.created_at,
     )
 
@@ -311,6 +291,30 @@ def get_asset(
     del current_user
     asset, tags, faces = asset_service.get_asset_detail(asset_id)
     return _build_detail_response(request, asset, tags, faces)
+
+
+@router.get("/{asset_id}/preview")
+async def get_asset_preview(
+    asset_id: UUID,
+    session_service: AssetService = Depends(get_asset_service),
+    current_user: User = Depends(get_current_user),
+):
+    del current_user
+    resolution = await AssetPreviewService(session_service.session).resolve_preview(
+        asset_id
+    )
+    if resolution.file_path is None:
+        return JSONResponse(
+            status_code=status.HTTP_202_ACCEPTED,
+            content={"status": "queued" if resolution.queued else "processing"},
+            headers={"Retry-After": "3"},
+        )
+    media_type = None
+    if resolution.file_path.suffix == ".mp4":
+        media_type = "video/mp4"
+    elif resolution.file_path.suffix == ".webp":
+        media_type = "image/webp"
+    return FileResponse(resolution.file_path, media_type=media_type)
 
 
 @router.patch("/{asset_id}", response_model=AssetDetailResponse)

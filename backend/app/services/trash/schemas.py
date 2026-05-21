@@ -76,7 +76,7 @@ class TrashAssetDetailResponse(SQLModel):
     tags: list[TrashTagSummary] = Field(default_factory=list)
     people: list[TrashPersonSummary] = Field(default_factory=list)
     faces: list[TrashFaceSummary] = Field(default_factory=list)
-    large_preview_url: str
+    preview_url: str
     created_at: datetime
 
 
@@ -102,7 +102,7 @@ class RestoredAssetDetailResponse(SQLModel):
     tags: list[TrashTagSummary] = Field(default_factory=list)
     people: list[TrashPersonSummary] = Field(default_factory=list)
     faces: list[TrashFaceSummary] = Field(default_factory=list)
-    large_preview_url: str
+    preview_url: str
     created_at: datetime
 
 

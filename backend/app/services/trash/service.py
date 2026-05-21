@@ -17,10 +17,8 @@ from app.services.ai_models.repository import (
 )
 from app.services.assets.media import (
     is_supported_image_mime_type,
-    is_supported_video_mime_type,
     master_path_to_source_path,
     processed_asset_dir,
-    processed_video_preview_path,
 )
 from app.services.assets.repository import AssetRepository
 from app.services.embeddings.repository import EmbeddingRepository
@@ -237,11 +235,6 @@ class TrashService:
             return True
         if not (asset_dir / "small.webp").is_file():
             return True
-        if asset.has_large_preview and not (asset_dir / "large.webp").is_file():
-            return True
-        if is_supported_video_mime_type(asset.mime_type):
-            if not processed_video_preview_path(asset.id).is_file():
-                return True
         return False
 
 

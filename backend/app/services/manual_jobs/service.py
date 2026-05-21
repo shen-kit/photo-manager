@@ -100,7 +100,9 @@ class ManualJobService:
                     "active_job_id": str(active_job.id),
                 },
             )
-        request_params = request.params if request is not None and request.params else {}
+        request_params = (
+            request.params if request is not None and request.params else {}
+        )
         normalized_payload = handler.validate_payload(dict(request_params))
         normalized_payload = handler.inject_internal_payload(
             normalized_payload,
@@ -131,7 +133,9 @@ class ManualJobService:
         payload = dict(parent_job.parameters or {})
         prepared_run = handler.prepare_run(payload)
         if prepared_run.progress_total is not None:
-            self.job_service.update_progress(parent_job.id, total=prepared_run.progress_total)
+            self.job_service.update_progress(
+                parent_job.id, total=prepared_run.progress_total
+            )
         if prepared_run.progress_total == 0:
             self.job_service.complete_job(
                 parent_job.id,

@@ -12,8 +12,8 @@ Self-hosted photo and video management with a database-first design, derived pre
 - Current backend features:
   - Asset upload and path-based ingest.
   - Bulk library scan from the originals directory.
-  - Generated tiny/small thumbnails and large previews.
-  - Video preview transcoding.
+  - Metadata-first ingestion with eager tiny/small thumbnails.
+  - On-demand preview generation through a combined asset preview endpoint.
   - CLIP-based semantic search.
   - InsightFace face detection and face embedding storage.
   - Incremental face matching for newly processed and restored assets.
@@ -29,7 +29,7 @@ Self-hosted photo and video management with a database-first design, derived pre
 - `db`: PostgreSQL 16 with `pgvector`.
 - `redis`: ARQ queue backend.
 - `api`: FastAPI app.
-- `worker`: ARQ worker for metadata, embedding, face, clustering, and scan jobs.
+- `worker`: ARQ worker for metadata, batch thumbnail, preview, embedding, face, clustering, and scan jobs.
 - `web`: Next.js app in `web/`, currently run separately from `docker-compose.yml`.
 
 ```mermaid
@@ -129,6 +129,7 @@ flowchart LR
 - Routes live under `backend/app/api/v1/features/`.
 - Domain logic lives under `backend/app/services/`.
 - Manual maintenance jobs use handler classes under `backend/app/services/manual_jobs/`.
+- Generic processing state tracking lives under `backend/app/services/asset_processing/`.
 - Repositories are used for persistence-heavy operations such as:
   - active vs deleted asset access
   - people and face queries
@@ -158,6 +159,7 @@ The schema is defined in [backend/app/models.py](backend/app/models.py) and migr
 | Table | Purpose | Important fields |
 | --- | --- | --- |
 | `assets` | Primary media metadata | `id`, `file_hash`, `master_path`, `mime_type`, `captured_at`, `search_vector`, `search_model_id`, `deleted_at`, `preview_status` |
+| `asset_processing` | Shared processing state for AI and preview tasks | `asset_id`, `ai_model_id`, `task`, `status`, `last_job_id`, `processed_at`, `error_message` |
 | `faces` | Detected faces and face embeddings | `asset_id`, `person_id`, `embedding`, `face_model_id`, `bounding_box`, `confidence`, `is_confirmed`, `is_excluded`, `crop_path` |
 | `people` | Named or unnamed person clusters | `name`, `thumbnail_face_id`, `thumbnail_path`, `thumbnail_manually_set`, `is_hidden` |
 | `ai_models` | Registered AI model versions | `task`, `model_name`, `version_tag`, `vector_dimensions`, `is_deprecated` |
@@ -175,6 +177,10 @@ The schema is defined in [backend/app/models.py](backend/app/models.py) and migr
   - There is no separate `asset_embeddings` table.
   - CLIP vectors are stored directly on `assets.search_vector`.
   - `assets.search_model_id` identifies which CLIP model generated that vector.
+- Processing state:
+  - `asset_processing` replaces the old AI-only processing table.
+  - `ai_model_id` is nullable for non-model tasks such as preview generation.
+  - current tasks include CLIP embeddings, face recognition, image previews, and video previews.
 - Faces:
   - `faces.face_model_id` isolates face embeddings by InsightFace model version.
   - `faces.person_id` drives people filtering, people counts, and search/person summaries.
@@ -221,8 +227,8 @@ The schema is defined in [backend/app/models.py](backend/app/models.py) and migr
 - Generated asset files:
   - `tiny.webp`
   - `small.webp`
-  - `large.webp`
-  - `preview.mp4` for transcoded video preview
+  - `large.webp` for generated large image previews
+  - `preview.mp4` for generated video previews
 - People thumbnails:
   - relative path prefix: `generated/people/thumbnails/`
   - current filename pattern: `<person_id>.webp`
@@ -234,7 +240,6 @@ The schema is defined in [backend/app/models.py](backend/app/models.py) and migr
   - metadata and app state in PostgreSQL
 - Derived and regeneratable:
   - asset thumbnails and previews
-  - video previews
   - people thumbnail files
   - AI cache under `data/ai_cache/`
 
@@ -249,7 +254,8 @@ The schema is defined in [backend/app/models.py](backend/app/models.py) and migr
   - generated asset previews
 - People may be deleted if they no longer have any active assets.
 - Restoring an asset requires the original source file to still exist.
-- Restore can requeue metadata processing if generated previews are missing.
+- Restore can requeue lightweight metadata work if eager thumbnails are missing.
+- Heavy previews are regenerated on first demand through the preview endpoint.
 
 ## Core workflows
 
@@ -260,11 +266,11 @@ The schema is defined in [backend/app/models.py](backend/app/models.py) and migr
 3. The asset is deduplicated by `file_hash`.
 4. For new assets:
    - the asset row is created
-   - fast artifacts are generated immediately or via FastAPI background tasks
-   - a metadata processing job is enqueued
+   - eager lightweight artifacts are generated immediately or via FastAPI background tasks
+   - metadata processing is enqueued
 5. For existing assets:
    - the existing row is returned
-   - missing derived files may trigger reprocessing
+   - missing eager thumbnails or incomplete metadata may trigger reprocessing
 6. If the matching asset was soft-deleted and restore is allowed, the existing row is restored instead of creating a new one.
 
 ### Bulk scan
@@ -272,24 +278,37 @@ The schema is defined in [backend/app/models.py](backend/app/models.py) and migr
 1. `POST /api/v1/jobs/bulk_scan/run` creates a manual job.
 2. The worker walks `storage/originals/` recursively, excluding `.tmp`.
 3. Supported files are hashed and deduplicated by `file_hash`.
-4. Each new asset row is inserted and queued for metadata processing.
-5. Notifications are written for scan start/completion/failures.
+4. Each asset row is created or reused from metadata-first scan results.
+5. Tiny/small thumbnails are generated eagerly.
+6. CLIP and face work are queued in batches.
+7. Notifications are written for scan start/completion/failures.
 
-### Metadata / preview generation
+### Metadata processing
 
 1. `process_asset_metadata` loads the original file.
 2. EXIF is extracted for images.
-3. Fast variants are ensured:
+3. Eager variants are ensured:
    - `tiny.webp`
    - usually `small.webp` for JPEG/PNG under the size threshold
    - middle-frame preview for video-derived thumbnails
-4. Additional derived files are generated:
-   - `small.webp` when not generated earlier
-   - `large.webp` for large-enough assets
-   - `preview.mp4` for video assets
+4. Video width/height/codec/duration metadata is refreshed when needed.
 5. When metadata processing completes it can enqueue:
    - CLIP embedding generation
    - face processing for images
+
+### Preview generation
+
+1. Assets expose a single `preview_url` pointing to `GET /api/v1/assets/{asset_id}/preview`.
+2. The endpoint resolves preview behavior by asset type:
+   - images serve the original file when a generated large preview is unnecessary
+   - images serve `large.webp` when a generated preview exists
+   - videos serve `preview.mp4` when the generated preview exists
+3. If a required preview is missing:
+   - the endpoint queues preview generation
+   - the request returns `202 Accepted`
+4. Internal generation remains split:
+   - image preview generation
+   - video preview generation/transcoding
 
 ### CLIP embedding and search
 
@@ -379,7 +398,7 @@ Used after new face detection and after restore follow-up when current-model fac
 3. `deleted_at` is cleared.
 4. Existing linked people are reconciled.
 5. Follow-up work then runs:
-   - requeue metadata only if generated previews are missing
+   - requeue metadata only if eager thumbnails or lightweight metadata are missing
    - enqueue CLIP only if the current default model embedding is missing or outdated
    - run incremental face matching immediately if current-model faces already exist
    - otherwise enqueue face detection with `auto_match=true`
@@ -393,6 +412,8 @@ Used after new face detection and after restore follow-up when current-model fac
 - Current job families include:
   - library scan
   - asset metadata processing
+  - asset preview generation
+  - batch thumbnail generation
   - CLIP embedding generation / backfill
   - face processing / backfill
   - people clustering

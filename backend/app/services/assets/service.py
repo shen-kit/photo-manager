@@ -35,7 +35,6 @@ from app.services.assets.media import (
     is_supported_video_mime_type,
     is_temporary_original_path,
     master_path_to_source_path,
-    processed_video_preview_path,
     resolve_source_input,
     should_generate_large_preview,
     should_generate_small_in_api,
@@ -484,13 +483,17 @@ class AssetService:
         return tags_subquery, faces_subquery
 
     def _asset_requires_reprocessing(self, asset: Asset) -> bool:
-        if not is_supported_video_mime_type(asset.mime_type):
-            return False
-        if asset.preview_status != VIDEO_PREVIEW_STATUS_READY:
+        asset_dir = processed_asset_dir(asset.id)
+        if not (asset_dir / "tiny.webp").is_file():
             return True
-        if asset.video_codec is None or asset.duration_seconds is None:
+        include_small = is_supported_video_mime_type(
+            asset.mime_type
+        ) or should_generate_small_in_api(asset.mime_type, asset.file_size_bytes or 0)
+        if include_small and not (asset_dir / "small.webp").is_file():
             return True
-        return not processed_video_preview_path(asset.id).is_file()
+        if is_supported_video_mime_type(asset.mime_type):
+            return asset.video_codec is None or asset.duration_seconds is None
+        return False
 
     def _inspect_media_or_raise(
         self, source_path: Path, mime_type: str

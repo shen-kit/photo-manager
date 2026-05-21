@@ -6,11 +6,12 @@ from uuid import UUID
 from sqlmodel import Session
 
 from app.core.database import engine
+from app.services.assets.batching import FaceBatchProcessor, parse_batch_items
 from app.services.ai_models.repository import (
     AI_MODEL_TASK_FACE_RECOGNITION,
     AIModelConfigurationError,
 )
-from app.services.ai_processing.service import AIProcessingTrackerService
+from app.services.asset_processing.service import AssetProcessingTrackerService
 from app.services.face_assignment.service import (
     FaceAssignmentService,
     FaceAssignmentServiceError,
@@ -33,7 +34,7 @@ async def process_asset_faces(
     asset_uuid = UUID(asset_id)
     with Session(engine) as session:
         job_context = JobTaskContext(session, job_id=job_uuid)
-        tracker = AIProcessingTrackerService(session)
+        tracker = AssetProcessingTrackerService(session)
         face_service = FaceProcessingService(session)
         job_context.mark_running("Processing asset faces")
         try:
@@ -100,9 +101,7 @@ async def process_asset_faces(
                 "detected_faces": result.detected_faces,
                 "deleted_unconfirmed_faces": result.deleted_unconfirmed_faces,
                 "faces_seen_for_matching": (
-                    assignment_result.faces_seen
-                    if assignment_result is not None
-                    else 0
+                    assignment_result.faces_seen if assignment_result is not None else 0
                 ),
                 "faces_matched": (
                     assignment_result.faces_matched
@@ -116,3 +115,88 @@ async def process_asset_faces(
                 ),
             },
         )
+
+
+async def process_asset_faces_batch(
+    _: dict[str, object],
+    items: list[dict[str, str | None]],
+    force: bool = False,
+    auto_match: bool = True,
+) -> None:
+    parsed_items = parse_batch_items(items)
+    with Session(engine) as session:
+        tracker = AssetProcessingTrackerService(session)
+        processor = FaceBatchProcessor(session)
+        face_service = FaceProcessingService(session)
+        try:
+            face_model = face_service.ai_model_repository.get_default_model_for_task(
+                AI_MODEL_TASK_FACE_RECOGNITION
+            )
+        except AIModelConfigurationError:
+            face_model = None
+        for item in parsed_items:
+            if face_model is not None:
+                tracker.mark_running(
+                    asset_id=item.asset_id,
+                    ai_model_id=face_model.id,
+                    task=AI_MODEL_TASK_FACE_RECOGNITION,
+                    job_id=item.job_id,
+                )
+        results = processor.process_batch(parsed_items, force=force)
+        for item in parsed_items:
+            job_context = JobTaskContext(session, job_id=item.job_id)
+            result = results[item.asset_id]
+            if not isinstance(result, Exception):
+                assignment_result = None
+                if auto_match and result.processed:
+                    assignment_result = FaceAssignmentService(
+                        session
+                    ).assign_faces_for_asset(item.asset_id)
+                if face_model is not None:
+                    tracker.mark_completed(
+                        asset_id=item.asset_id,
+                        ai_model_id=face_model.id,
+                        task=AI_MODEL_TASK_FACE_RECOGNITION,
+                        job_id=item.job_id,
+                        output_count=result.detected_faces,
+                    )
+                job_context.complete(
+                    "Asset faces processed",
+                    result={
+                        "asset_id": str(item.asset_id),
+                        "processed": result.processed,
+                        "skipped": result.skipped,
+                        "auto_match": auto_match,
+                        "faces_created": result.faces_created,
+                        "detected_faces": result.detected_faces,
+                        "deleted_unconfirmed_faces": result.deleted_unconfirmed_faces,
+                        "faces_seen_for_matching": (
+                            assignment_result.faces_seen
+                            if assignment_result is not None
+                            else 0
+                        ),
+                        "faces_matched": (
+                            assignment_result.faces_matched
+                            if assignment_result is not None
+                            else 0
+                        ),
+                        "faces_unmatched": (
+                            assignment_result.faces_unmatched
+                            if assignment_result is not None
+                            else 0
+                        ),
+                    },
+                )
+                continue
+            if face_model is not None:
+                tracker.mark_failed(
+                    asset_id=item.asset_id,
+                    ai_model_id=face_model.id,
+                    task=AI_MODEL_TASK_FACE_RECOGNITION,
+                    job_id=item.job_id,
+                    error_message=str(result),
+                )
+            job_context.fail(
+                str(result),
+                result={"asset_id": str(item.asset_id), "skipped": False},
+            )

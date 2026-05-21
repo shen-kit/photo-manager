@@ -5,30 +5,30 @@ from uuid import UUID
 from sqlmodel import Session
 
 from app.models import utc_now
-from app.services.ai_processing.repository import (
-    AI_PROCESSING_STATUS_COMPLETED,
-    AI_PROCESSING_STATUS_FAILED,
-    AI_PROCESSING_STATUS_QUEUED,
-    AI_PROCESSING_STATUS_RUNNING,
-    AIProcessingRepository,
+from app.services.asset_processing.repository import (
+    PROCESSING_STATUS_COMPLETED,
+    PROCESSING_STATUS_FAILED,
+    PROCESSING_STATUS_QUEUED,
+    PROCESSING_STATUS_RUNNING,
+    AssetProcessingRepository,
 )
 
 
-class AIProcessingTrackerService:
+class AssetProcessingTrackerService:
     def __init__(
         self,
         session: Session,
         *,
-        repository: AIProcessingRepository | None = None,
+        repository: AssetProcessingRepository | None = None,
     ) -> None:
         self.session = session
-        self.repository = repository or AIProcessingRepository(session)
+        self.repository = repository or AssetProcessingRepository(session)
 
     def mark_queued(
         self,
         *,
         asset_id: UUID,
-        ai_model_id: int,
+        ai_model_id: int | None,
         task: str,
         job_id: UUID | None,
     ) -> None:
@@ -37,7 +37,7 @@ class AIProcessingTrackerService:
             ai_model_id=ai_model_id,
             task=task,
         )
-        row.status = AI_PROCESSING_STATUS_QUEUED
+        row.status = PROCESSING_STATUS_QUEUED
         row.error_message = None
         row.last_job_id = job_id
         row.started_at = None
@@ -48,7 +48,7 @@ class AIProcessingTrackerService:
         self,
         *,
         asset_id: UUID,
-        ai_model_id: int,
+        ai_model_id: int | None,
         task: str,
         job_id: UUID | None,
     ) -> None:
@@ -57,7 +57,7 @@ class AIProcessingTrackerService:
             ai_model_id=ai_model_id,
             task=task,
         )
-        row.status = AI_PROCESSING_STATUS_RUNNING
+        row.status = PROCESSING_STATUS_RUNNING
         row.error_message = None
         row.last_job_id = job_id
         row.started_at = utc_now()
@@ -67,7 +67,7 @@ class AIProcessingTrackerService:
         self,
         *,
         asset_id: UUID,
-        ai_model_id: int,
+        ai_model_id: int | None,
         task: str,
         job_id: UUID | None,
         output_count: int,
@@ -77,7 +77,7 @@ class AIProcessingTrackerService:
             ai_model_id=ai_model_id,
             task=task,
         )
-        row.status = AI_PROCESSING_STATUS_COMPLETED
+        row.status = PROCESSING_STATUS_COMPLETED
         row.error_message = None
         row.last_job_id = job_id
         if row.started_at is None:
@@ -90,7 +90,7 @@ class AIProcessingTrackerService:
         self,
         *,
         asset_id: UUID,
-        ai_model_id: int,
+        ai_model_id: int | None,
         task: str,
         job_id: UUID | None,
         error_message: str,
@@ -100,7 +100,7 @@ class AIProcessingTrackerService:
             ai_model_id=ai_model_id,
             task=task,
         )
-        row.status = AI_PROCESSING_STATUS_FAILED
+        row.status = PROCESSING_STATUS_FAILED
         row.error_message = error_message
         row.last_job_id = job_id
         if row.started_at is None:

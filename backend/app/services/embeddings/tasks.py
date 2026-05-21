@@ -6,11 +6,12 @@ from uuid import UUID
 from sqlmodel import Session
 
 from app.core.database import engine
+from app.services.assets.batching import EmbeddingBatchProcessor, parse_batch_items
 from app.services.ai_models.repository import (
     AI_MODEL_TASK_CLIP_EMBEDDING,
     AIModelConfigurationError,
 )
-from app.services.ai_processing.service import AIProcessingTrackerService
+from app.services.asset_processing.service import AssetProcessingTrackerService
 from app.services.embeddings.service import EmbeddingService, EmbeddingServiceError
 from app.services.jobs.queue import enqueue_asset_embedding_job
 from app.services.jobs.context import JobNotification, JobTaskContext
@@ -29,7 +30,7 @@ async def generate_asset_clip_embedding(
     asset_uuid = UUID(asset_id)
     with Session(engine) as session:
         job_context = JobTaskContext(session, job_id=job_uuid)
-        tracker = AIProcessingTrackerService(session)
+        tracker = AssetProcessingTrackerService(session)
         embedding_service = EmbeddingService(session)
         job_context.mark_running("Generating CLIP embedding")
         try:
@@ -92,3 +93,65 @@ async def generate_asset_clip_embedding(
                 "skipped": result.skipped,
             },
         )
+
+
+async def generate_asset_clip_embedding_batch(
+    _: dict[str, object],
+    items: list[dict[str, str | None]],
+    force: bool = False,
+) -> None:
+    parsed_items = parse_batch_items(items)
+    with Session(engine) as session:
+        tracker = AssetProcessingTrackerService(session)
+        processor = EmbeddingBatchProcessor(session)
+        embedding_service = EmbeddingService(session)
+        try:
+            clip_model = (
+                embedding_service.ai_model_repository.get_default_model_for_task(
+                    AI_MODEL_TASK_CLIP_EMBEDDING
+                )
+            )
+        except AIModelConfigurationError:
+            clip_model = None
+        for item in parsed_items:
+            if clip_model is not None:
+                tracker.mark_running(
+                    asset_id=item.asset_id,
+                    ai_model_id=clip_model.id,
+                    task=AI_MODEL_TASK_CLIP_EMBEDDING,
+                    job_id=item.job_id,
+                )
+        results = processor.process_batch(parsed_items, force=force)
+        for item in parsed_items:
+            job_context = JobTaskContext(session, job_id=item.job_id)
+            result = results[item.asset_id]
+            if not isinstance(result, Exception):
+                if clip_model is not None:
+                    tracker.mark_completed(
+                        asset_id=item.asset_id,
+                        ai_model_id=clip_model.id,
+                        task=AI_MODEL_TASK_CLIP_EMBEDDING,
+                        job_id=item.job_id,
+                        output_count=1,
+                    )
+                job_context.complete(
+                    "CLIP embedding generated",
+                    result={
+                        "asset_id": str(item.asset_id),
+                        "generated": result.generated,
+                        "skipped": result.skipped,
+                    },
+                )
+                continue
+            if clip_model is not None:
+                tracker.mark_failed(
+                    asset_id=item.asset_id,
+                    ai_model_id=clip_model.id,
+                    task=AI_MODEL_TASK_CLIP_EMBEDDING,
+                    job_id=item.job_id,
+                    error_message=str(result),
+                )
+            job_context.fail(
+                str(result),
+                result={"asset_id": str(item.asset_id), "skipped": False},
+            )

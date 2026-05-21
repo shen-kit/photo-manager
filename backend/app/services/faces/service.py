@@ -9,7 +9,7 @@ from uuid import UUID
 from sqlmodel import Session
 
 from app.models import Asset, Face
-from app.services.ai_processing.repository import AIProcessingRepository
+from app.services.asset_processing.repository import AssetProcessingRepository
 from app.services.ai_models.repository import (
     AI_MODEL_TASK_FACE_RECOGNITION,
     AIModelConfigurationError,
@@ -59,7 +59,7 @@ class FaceProcessingService:
         session: Session,
         *,
         repository: FaceRepository | None = None,
-        ai_processing_repository: AIProcessingRepository | None = None,
+        asset_processing_repository: AssetProcessingRepository | None = None,
         ai_model_repository: AIModelRepository | None = None,
         detector: FaceDetectionProvider
         | Callable[[Path], list[DetectedFace]]
@@ -67,8 +67,8 @@ class FaceProcessingService:
     ) -> None:
         self.session = session
         self.repository = repository or FaceRepository(session)
-        self.ai_processing_repository = (
-            ai_processing_repository or AIProcessingRepository(session)
+        self.asset_processing_repository = (
+            asset_processing_repository or AssetProcessingRepository(session)
         )
         self.ai_model_repository = ai_model_repository or AIModelRepository(session)
         self.detector = resolve_face_detection_provider(detector)
@@ -112,7 +112,7 @@ class FaceProcessingService:
             model_id=face_model.id,
         )
         processing_completed = (
-            self.ai_processing_repository.asset_has_completed_processing(
+            self.asset_processing_repository.asset_has_completed_processing(
                 asset_id=asset.id,
                 ai_model_id=face_model.id,
                 task=AI_MODEL_TASK_FACE_RECOGNITION,
@@ -214,7 +214,7 @@ class FaceProcessingService:
             )
         else:
             total = len(
-                self.ai_processing_repository.list_asset_ids_needing_face_processing(
+                self.asset_processing_repository.list_asset_ids_needing_face_processing(
                     ai_model_id=face_model.id
                 )
             )
@@ -242,7 +242,7 @@ class FaceProcessingService:
             )
         else:
             asset_ids = (
-                self.ai_processing_repository.list_asset_ids_needing_face_processing(
+                self.asset_processing_repository.list_asset_ids_needing_face_processing(
                     ai_model_id=face_model.id,
                     limit=limit,
                     offset=offset,

@@ -10,8 +10,12 @@ from sqlmodel import Session, select
 
 from app.core.database import engine
 from app.models import Asset
+from app.services.assets.batching import BatchProcessingItem, ThumbnailBatchProcessor
 from app.services.assets.hashing import compute_sha256
-from app.services.jobs.queue import enqueue_asset_processing_job
+from app.services.jobs.queue import (
+    enqueue_asset_embedding_batch_job,
+    enqueue_asset_faces_batch_job,
+)
 from app.services.assets.media import (
     MEDIA_ORIGINALS_DIR,
     MEDIA_ORIGINALS_TMP_DIR,
@@ -106,8 +110,12 @@ def _inspect_media_for_scan(
 
 async def _process_batch(batch: list[Path], job_id: UUID) -> ScanStats:
     stats = ScanStats()
+    thumbnail_items: list[BatchProcessingItem] = []
+    embedding_items: list[dict[str, str | None]] = []
+    face_items: list[dict[str, str | None]] = []
 
     with Session(engine) as session:
+        thumbnail_processor = ThumbnailBatchProcessor(session)
         for path in batch:
             stats = stats.add(ScanStats(files_seen=1))
             mime_type = guess_mime_type(path)
@@ -132,10 +140,18 @@ async def _process_batch(batch: list[Path], job_id: UUID) -> ScanStats:
                 continue
 
             existing_asset = session.exec(
-                select(Asset.id).where(Asset.file_hash == file_hash)
+                select(Asset).where(Asset.file_hash == file_hash)
             ).first()
             if existing_asset is not None:
                 stats = stats.add(ScanStats(duplicates_skipped=1))
+                thumbnail_items.append(BatchProcessingItem(asset_id=existing_asset.id))
+                embedding_items.append(
+                    {"asset_id": str(existing_asset.id), "job_id": None}
+                )
+                if not is_supported_video_mime_type(existing_asset.mime_type):
+                    face_items.append(
+                        {"asset_id": str(existing_asset.id), "job_id": None}
+                    )
                 continue
 
             try:
@@ -177,28 +193,33 @@ async def _process_batch(batch: list[Path], job_id: UUID) -> ScanStats:
                 stats = stats.add(ScanStats(duplicates_skipped=1))
                 continue
 
-            queued_job = await enqueue_asset_processing_job(
-                asset.id,
-                parent_job_id=job_id,
-            )
-            if not queued_job:
-                NotificationService(session).create_notification(
-                    level=NotificationLevel.WARNING,
-                    category=NotificationCategory.SCAN,
-                    title="Scan failed to process file",
-                    message="The asset was created, but background processing was not enqueued.",
-                    details={"path": str(path), "asset_id": str(asset.id)},
-                    related_job_id=job_id,
-                    related_asset_id=asset.id,
-                )
-                stats = stats.add(ScanStats(created_assets=1, failed=1))
-                continue
+            thumbnail_items.append(BatchProcessingItem(asset_id=asset.id))
+            embedding_items.append({"asset_id": str(asset.id), "job_id": None})
+            if not is_supported_video_mime_type(asset.mime_type):
+                face_items.append({"asset_id": str(asset.id), "job_id": None})
             stats = stats.add(
                 ScanStats(
                     created_assets=1,
-                    processing_jobs_enqueued=1,
                 )
             )
+
+        thumbnail_processor.process_batch(thumbnail_items)
+        embedding_queued = False
+        face_queued = False
+        if embedding_items:
+            embedding_queued = await enqueue_asset_embedding_batch_job(embedding_items)
+        if face_items:
+            face_queued = await enqueue_asset_faces_batch_job(
+                face_items, auto_match=True
+            )
+        if embedding_items and not embedding_queued:
+            stats = stats.add(ScanStats(failed=len(embedding_items)))
+        if face_items and not face_queued:
+            stats = stats.add(ScanStats(failed=len(face_items)))
+        enqueued = (len(embedding_items) if embedding_queued else 0) + (
+            len(face_items) if face_queued else 0
+        )
+        stats = stats.add(ScanStats(processing_jobs_enqueued=enqueued))
 
     return stats
 

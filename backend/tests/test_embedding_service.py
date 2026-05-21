@@ -63,7 +63,7 @@ class _FakeEmbeddingRepository:
         return []
 
 
-class _FakeAIProcessingRepository:
+class _FakeAssetProcessingRepository:
     def list_asset_ids_needing_clip_processing(
         self, *, ai_model_id: int, limit=None, offset=0
     ):
@@ -84,9 +84,7 @@ class _FakeEmbeddingProvider:
         pretrained: str,
         expected_dimensions: int | None,
     ) -> list[float]:
-        self.image_calls.append(
-            (path, model_name, pretrained, expected_dimensions)
-        )
+        self.image_calls.append((path, model_name, pretrained, expected_dimensions))
         return [0.1, 0.2, 0.3]
 
     def embed_text(
@@ -97,9 +95,7 @@ class _FakeEmbeddingProvider:
         pretrained: str,
         expected_dimensions: int | None,
     ) -> list[float]:
-        self.text_calls.append(
-            (query, model_name, pretrained, expected_dimensions)
-        )
+        self.text_calls.append((query, model_name, pretrained, expected_dimensions))
         return [0.4, 0.5]
 
 
@@ -134,7 +130,7 @@ class EmbeddingServiceTest(unittest.TestCase):
             service = EmbeddingService(
                 session=None,
                 repository=repository,
-                ai_processing_repository=_FakeAIProcessingRepository(),
+                asset_processing_repository=_FakeAssetProcessingRepository(),
                 ai_model_repository=_FakeAIModelRepository(self._model()),
                 provider=provider,
             )
@@ -170,7 +166,7 @@ class EmbeddingServiceTest(unittest.TestCase):
                     created_at=datetime.now(timezone.utc),
                 )
             ),
-            ai_processing_repository=_FakeAIProcessingRepository(),
+            asset_processing_repository=_FakeAssetProcessingRepository(),
             ai_model_repository=_FakeAIModelRepository(self._model(model_id=21)),
             provider=provider,
         )
