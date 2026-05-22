@@ -17,12 +17,10 @@ from app.services.ai_models.repository import (
 )
 from app.services.asset_processing.service import AssetProcessingTrackerService
 from app.services.assets.media import (
-    canonical_original_path,
-    master_path_to_source_path,
     processed_asset_dir,
-    source_path_to_master_path,
 )
 from app.services.assets.scan import scan_originals_library
+from app.services.assets.storage_rules import StorageRulesService
 from app.services.embeddings.service import EmbeddingService
 from app.services.faces.service import FaceProcessingService
 from app.services.jobs.queue import (
@@ -78,6 +76,7 @@ class ManualJobDefinition:
     mode: str
     supports_dry_run: bool
     batch_size: int | None = None
+    execution_backend: str = "worker"
 
 
 class ManualJobHandler:
@@ -512,6 +511,7 @@ class ApplyStorageRulesManualJobHandler(ManualJobHandler):
         category="asset",
         mode="global",
         supports_dry_run=True,
+        execution_backend="api",
     )
     parameters = (
         ManualJobParameterDefinition(
@@ -527,15 +527,6 @@ class ApplyStorageRulesManualJobHandler(ManualJobHandler):
         dry_run = bool(normalized["dry_run"])
         return {"dry_run": dry_run}
 
-    def _plan_assets(self) -> list[Asset]:
-        return list(
-            self.session.exec(
-                select(Asset)
-                .where(Asset.deleted_at.is_(None))
-                .order_by(Asset.created_at.asc(), Asset.id.asc())
-            ).all()
-        )
-
     def count_candidates(self, payload: dict[str, Any]) -> int | None:
         del payload
         return None
@@ -545,101 +536,8 @@ class ApplyStorageRulesManualJobHandler(ManualJobHandler):
         parent_job: Job,
         prepared_run: ManualJobPreparedRun,
     ) -> None:
-        payload = prepared_run.payload
-        assets = self._plan_assets()
-        self.job_service.mark_running(parent_job.id, message="Planning storage rules")
-        self.job_service.update_progress(parent_job.id, total=len(assets))
-        dry_run = bool(payload.get("dry_run", True))
-        planned_count = 0
-        moved_count = 0
-        conflict_count = 0
-        missing_source_count = 0
-        failed_count = 0
-        already_compliant_count = 0
-        for index, asset in enumerate(assets, start=1):
-            try:
-                source_path = master_path_to_source_path(asset.master_path)
-            except ValueError:
-                missing_source_count += 1
-                self.job_service.update_progress(
-                    parent_job.id, current=index, message="Planning storage rules"
-                )
-                continue
-            if not source_path.is_file():
-                missing_source_count += 1
-                self.job_service.update_progress(
-                    parent_job.id, current=index, message="Planning storage rules"
-                )
-                continue
-            target_path = canonical_original_path(
-                asset.file_hash,
-                source_path.suffix,
-                timestamp=asset.created_at,
-            )
-            if target_path == source_path:
-                already_compliant_count += 1
-                self.job_service.update_progress(
-                    parent_job.id, current=index, message="Planning storage rules"
-                )
-                continue
-            planned_count += 1
-            if target_path.exists() and target_path != source_path:
-                conflict_count += 1
-                self.job_service.update_progress(
-                    parent_job.id, current=index, message="Planning storage rules"
-                )
-                continue
-            if dry_run:
-                self.job_service.update_progress(
-                    parent_job.id, current=index, message="Planning storage rules"
-                )
-                continue
-            original_path = source_path
-            try:
-                target_path.parent.mkdir(parents=True, exist_ok=True)
-                original_path.rename(target_path)
-                asset.master_path = source_path_to_master_path(target_path)
-                self.session.add(asset)
-                self.session.commit()
-                moved_count += 1
-            except Exception:
-                failed_count += 1
-                if target_path.exists() and not original_path.exists():
-                    try:
-                        target_path.rename(original_path)
-                    except OSError:
-                        pass
-                self.session.rollback()
-            self.job_service.update_progress(
-                parent_job.id, current=index, message="Applying storage rules"
-            )
-        result = {
-            "total_count": len(assets),
-            "processed_count": len(assets),
-            "succeeded_count": moved_count,
-            "failed_count": failed_count,
-            "skipped_count": already_compliant_count
-            + conflict_count
-            + missing_source_count,
-            "planned_count": planned_count,
-            "already_compliant_count": already_compliant_count,
-            "moved_count": moved_count,
-            "conflict_count": conflict_count,
-            "missing_source_count": missing_source_count,
-            "dry_run": dry_run,
-        }
-        if failed_count:
-            self.job_service.fail_job(
-                parent_job.id,
-                "Storage rules completed with failures",
-                result=result,
-            )
-        else:
-            self.job_service.complete_job(
-                parent_job.id,
-                result=result,
-                message="Storage rules completed",
-            )
+        dry_run = bool(prepared_run.payload.get("dry_run", True))
+        StorageRulesService().run_job(parent_job_id=parent_job.id, dry_run=dry_run)
 
     def build_parent_result(self, parent_job: Job) -> dict[str, Any]:
         return parent_job.result or self.build_zero_result({})

@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import asyncio
 import os
 from pathlib import Path
 
@@ -7,6 +8,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.v1.router import api_v1_router
 from app.core.logging import setup_logging
+from app.services.manual_jobs.api_executor import ApiManualJobExecutor
 
 MEDIA_ORIGINALS_DIR = Path(os.getenv("MEDIA_ORIGINALS_DIR", "/media/originals"))
 MEDIA_ORIGINALS_TMP_DIR = MEDIA_ORIGINALS_DIR / ".tmp"
@@ -19,7 +21,15 @@ async def lifespan(_: FastAPI):
     MEDIA_ORIGINALS_DIR.mkdir(parents=True, exist_ok=True)
     MEDIA_ORIGINALS_TMP_DIR.mkdir(parents=True, exist_ok=True)
     MEDIA_PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
-    yield
+    stop_event = asyncio.Event()
+    executor_task = asyncio.create_task(
+        ApiManualJobExecutor().run_forever(stop_event=stop_event)
+    )
+    try:
+        yield
+    finally:
+        stop_event.set()
+        await executor_task
 
 
 app = FastAPI(title="Photo Manager API", lifespan=lifespan)

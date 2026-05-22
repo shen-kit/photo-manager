@@ -13,6 +13,7 @@ Self-hosted photo and video management with a database-first design, cursor-base
   - Asset upload and path-based ingest.
   - Bulk library scan from the originals directory.
   - Metadata-first ingestion with eager tiny/small thumbnails.
+  - API-owned storage rules maintenance with dry-run planning and rerun-safe reconciliation.
   - Cursor-based active asset browsing for large libraries.
   - Timeline month/day APIs for jump-to-date scrolling.
   - On-demand preview generation through a combined asset preview endpoint.
@@ -32,6 +33,7 @@ Self-hosted photo and video management with a database-first design, cursor-base
 - `redis`: ARQ queue backend.
 - `api`: FastAPI app.
 - `worker`: ARQ worker for metadata, batch thumbnail, preview, embedding, face, clustering, and scan jobs.
+- `api` also runs an internal executor for API-owned maintenance jobs that must mutate `storage/originals/`.
 - `web`: Next.js app in `web/`, currently run separately from `docker-compose.yml`.
 
 ```mermaid
@@ -76,6 +78,7 @@ flowchart LR
   - Host path: `storage/originals/`
   - Container path: `/media/originals`
   - Source-of-truth media files.
+  - API has write access; worker mounts this directory read-only for safety.
 - Derived files:
   - Host path: `storage/processed/`
   - Container path: `/media/processed`
@@ -131,6 +134,7 @@ flowchart LR
 - Routes live under `backend/app/api/v1/features/`.
 - Domain logic lives under `backend/app/services/`.
 - Manual maintenance jobs use handler classes under `backend/app/services/manual_jobs/`.
+- Some manual jobs are worker-executed, while filesystem-mutating jobs such as storage rules are API-executed.
 - Generic processing state tracking lives under `backend/app/services/asset_processing/`.
 - Repositories are used for persistence-heavy operations such as:
   - active vs deleted asset access
@@ -139,6 +143,7 @@ flowchart LR
 - Background worker entrypoints stay thin:
   - `backend/worker/tasks.py` delegates to service-level task functions
   - shared task/job lifecycle helpers live under `backend/app/services/jobs/`
+- API-owned maintenance execution is started from app lifespan and is used for jobs that must write to originals safely.
 - Model-runtime boundaries are explicit where they are likely to vary:
   - `backend/app/services/embeddings/provider.py` defines the embedding provider seam
   - `backend/app/services/face_detection/provider.py` defines the face-detection provider seam
@@ -258,6 +263,21 @@ The schema is defined in [backend/app/models.py](backend/app/models.py) and migr
 
 - Soft delete does not physically remove:
   - original media
+  - generated previews/thumbnails unless explicitly regenerated later
+
+## Manual jobs
+
+- Manual jobs are exposed through `/api/v1/jobs/available` and `/api/v1/jobs/<job_key>/run`.
+- Job parameters are declared by backend handler definitions and consumed by the frontend test launcher dynamically.
+- `apply_storage_rules`:
+  - defaults to `dry_run=true`
+  - is executed by the API, not the worker
+  - plans canonical original-path moves and applies them only when `dry_run=false`
+  - commits `assets.master_path` updates in batches while relying on rerun-safe reconciliation if filesystem and DB drift after interruption
+- Storage-rules reruns are intended to continue safely from current filesystem state:
+  - already compliant assets are skipped
+  - moved-on-disk but stale-in-DB assets are reconciled
+  - conflicting or missing-source assets are reported in the job result
   - asset row
   - face rows
   - CLIP vectors on `assets`

@@ -114,13 +114,14 @@ class ManualJobService:
             job_key=job_key,
             is_visible=True,
         )
-        queued = await enqueue_manual_job_run(parent_job.id)
-        if not queued:
-            self.job_service.fail_job(parent_job.id, "Failed to enqueue manual job")
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Failed to enqueue manual job",
-            )
+        if handler.definition.execution_backend == "worker":
+            queued = await enqueue_manual_job_run(parent_job.id)
+            if not queued:
+                self.job_service.fail_job(parent_job.id, "Failed to enqueue manual job")
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Failed to enqueue manual job",
+                )
         return parent_job
 
     async def execute_parent_job(self, *, job_id: UUID) -> None:

@@ -4,7 +4,7 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, status
-from sqlalchemy import func
+from sqlalchemy import func, update
 from sqlmodel import Session, select
 
 from app.core.database import get_session
@@ -162,6 +162,23 @@ class JobService:
         )
         return self.session.exec(statement).first()
 
+    def list_root_jobs_by_key_and_status(
+        self,
+        *,
+        job_key: str,
+        statuses: tuple[str, ...],
+    ) -> list[Job]:
+        statement = (
+            select(Job)
+            .where(
+                Job.job_key == job_key,
+                Job.parent_job_id.is_(None),
+                Job.status.in_(statuses),
+            )
+            .order_by(Job.created_at.asc(), Job.id.asc())
+        )
+        return list(self.session.exec(statement).all())
+
     def count_terminal_children(self, *, parent_job_id: UUID) -> int:
         statement = (
             select(func.count())
@@ -240,13 +257,35 @@ class JobService:
             finished_at=utc_now(),
         )
 
-    def cancel_job(self, job_id: UUID, message: str | None = None) -> Job:
+    def cancel_job(
+        self,
+        job_id: UUID,
+        message: str | None = None,
+        *,
+        result: dict[str, Any] | None = None,
+    ) -> Job:
         return self._update_job(
             job_id,
             status="cancelled",
             progress_message=message,
+            result=result,
             finished_at=utc_now(),
         )
+
+    def claim_queued_job(self, job_id: UUID, *, message: str | None = None) -> bool:
+        result = self.session.exec(
+            update(Job)
+            .where(Job.id == job_id, Job.status == "queued")
+            .values(
+                status="running",
+                started_at=utc_now(),
+                progress_message=message,
+                error_message=None,
+                finished_at=None,
+            )
+        )
+        self.session.commit()
+        return bool(result.rowcount)
 
     def _update_job(self, job_id: UUID, **values: Any) -> Job:
         job = self.get_job(job_id)
