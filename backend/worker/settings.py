@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import logging
 import os
+import time
 
 from arq import run_worker
 from arq.connections import RedisSettings
+from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from app.core.logging import setup_logging
 from .tasks import (
@@ -17,6 +21,9 @@ from .tasks import (
     run_manual_job,
     schedule_manual_job_batch,
 )
+
+logger = logging.getLogger(__name__)
+WORKER_RETRY_DELAY_SECONDS = 3.0
 
 
 class WorkerSettings:
@@ -39,4 +46,14 @@ class WorkerSettings:
 
 def main() -> None:
     setup_logging()
-    run_worker(WorkerSettings)
+    while True:
+        try:
+            run_worker(WorkerSettings)
+            return
+        except (RedisTimeoutError, RedisConnectionError, OSError) as exc:
+            logger.warning(
+                "Worker failed to connect to Redis; retrying in %.1f seconds: %s",
+                WORKER_RETRY_DELAY_SECONDS,
+                exc,
+            )
+            time.sleep(WORKER_RETRY_DELAY_SECONDS)
