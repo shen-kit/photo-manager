@@ -97,6 +97,7 @@ class AssetDetailResponse(SQLModel):
     tags: list[TagSummary] = Field(default_factory=list)
     people: list[PersonSummary] = Field(default_factory=list)
     faces: list[FaceSummary] = Field(default_factory=list)
+    small_thumbnail_url: str
     preview_url: str
     created_at: datetime
 
@@ -227,6 +228,7 @@ def _build_detail_response(
         tags=_build_tag_models(tags),
         people=_build_people_models(faces),
         faces=_build_face_models(faces),
+        small_thumbnail_url=_thumbnail_url(request, asset.id, "small"),
         preview_url=_preview_url(request, asset),
         created_at=asset.created_at,
     )

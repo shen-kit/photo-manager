@@ -134,6 +134,7 @@ def _build_trash_detail(
         tags=_build_tag_models(tags),
         people=_build_people_models(faces),
         faces=_build_face_models(faces),
+        small_thumbnail_url=_thumbnail_url(request, asset.id, "small"),
         preview_url=_preview_url(request, asset),
         created_at=asset.created_at,
     )
@@ -166,6 +167,7 @@ def _build_restore_response(
             tags=_build_tag_models(result.tags),
             people=_build_people_models(result.faces),
             faces=_build_face_models(result.faces),
+            small_thumbnail_url=_thumbnail_url(request, result.asset.id, "small"),
             preview_url=_preview_url(request, result.asset),
             created_at=result.asset.created_at,
         ),
