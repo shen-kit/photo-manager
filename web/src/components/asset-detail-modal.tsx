@@ -1,20 +1,36 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CheckCircle2, Eye, EyeOff, LoaderCircle, ScanFace, X } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import {
+  CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
+  Eye,
+  EyeOff,
+  LoaderCircle,
+  ScanFace,
+  X,
+} from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { AuthenticatedPreview } from "@/components/authenticated-preview";
 import { useToast } from "@/components/toast-provider";
-import { getAsset } from "@/lib/api/assets";
+import { ensureAssetPreviews, getAsset } from "@/lib/api/assets";
 import { getAssetFaces, triggerAssetFaceProcessing, updateAssetFace } from "@/lib/api/faces";
 import { listPeople, updatePersonThumbnail } from "@/lib/api/people";
-import type { AssetFace, Person } from "@/lib/types";
+import type { AssetFace, AssetPreviewEnsureItem, Person } from "@/lib/types";
+
+type AssetDetailModalNavigationItem = {
+  id: string;
+  mime_type: string;
+};
 
 type AssetDetailModalProps = {
   assetId: string | null;
   onClose: () => void;
+  onSelectAsset?: (assetId: string) => void;
+  navigationItems?: AssetDetailModalNavigationItem[];
   thumbnailPersonId?: string | null;
 };
 
@@ -36,11 +52,36 @@ function personLabel(person: Person) {
   return person.name?.trim() || "Unnamed person";
 }
 
-export function AssetDetailModal({ assetId, onClose, thumbnailPersonId = null }: AssetDetailModalProps) {
+function mergePreviewItems(
+  current: Record<string, AssetPreviewEnsureItem>,
+  items: AssetPreviewEnsureItem[],
+) {
+  if (items.length === 0) {
+    return current;
+  }
+
+  const next = { ...current };
+  for (const item of items) {
+    next[item.asset_id] = item;
+  }
+  return next;
+}
+
+export function AssetDetailModal({
+  assetId,
+  onClose,
+  onSelectAsset,
+  navigationItems = [],
+  thumbnailPersonId = null,
+}: AssetDetailModalProps) {
   const [mounted, setMounted] = useState(false);
   const [forceFaceProcessing, setForceFaceProcessing] = useState(false);
   const [showFaces, setShowFaces] = useState(false);
-  const [selectedPersonByFaceId, setSelectedPersonByFaceId] = useState<Record<string, string>>( {} );
+  const [selectedPersonByFaceId, setSelectedPersonByFaceId] = useState<Record<string, string>>({});
+  const [prefetchedPreviewItems, setPrefetchedPreviewItems] = useState<Record<string, AssetPreviewEnsureItem>>({});
+  const [prefetchedPreviewObjectUrls, setPrefetchedPreviewObjectUrls] = useState<Record<string, string>>({});
+  const prefetchedPreviewUrlsRef = useRef<Set<string>>(new Set());
+  const prefetchedObjectUrlsRef = useRef<Record<string, string>>({});
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const { data, isLoading, isError, error } = useQuery({
@@ -102,7 +143,12 @@ export function AssetDetailModal({ assetId, onClose, thumbnailPersonId = null }:
 
   useEffect(() => {
     setMounted(true);
-    return () => setMounted(false);
+    return () => {
+      setMounted(false);
+      for (const objectUrl of Object.values(prefetchedObjectUrlsRef.current)) {
+        URL.revokeObjectURL(objectUrl);
+      }
+    };
   }, []);
 
   useEffect(() => {
@@ -129,7 +175,160 @@ export function AssetDetailModal({ assetId, onClose, thumbnailPersonId = null }:
     });
   }, [faces]);
 
-  const sortedPeople = useMemo(() => people.slice().sort((a, b) => a.asset_count - b.asset_count > 0 ? -1 : 1), [people]);
+  const sortedPeople = useMemo(
+    () => people.slice().sort((a, b) => (a.asset_count - b.asset_count > 0 ? -1 : 1)),
+    [people],
+  );
+  const currentAssetIndex = useMemo(
+    () => navigationItems.findIndex((item) => item.id === assetId),
+    [assetId, navigationItems],
+  );
+  const previousAsset = currentAssetIndex > 0 ? navigationItems[currentAssetIndex - 1] : null;
+  const nextAsset =
+    currentAssetIndex >= 0 && currentAssetIndex < navigationItems.length - 1
+      ? navigationItems[currentAssetIndex + 1]
+      : null;
+  const neighboringAssets = useMemo(() => {
+    if (currentAssetIndex < 0) {
+      return [];
+    }
+    return navigationItems.filter((_, index) => Math.abs(index - currentAssetIndex) <= 2 && index !== currentAssetIndex);
+  }, [currentAssetIndex, navigationItems]);
+  const neighboringAssetIds = useMemo(
+    () => neighboringAssets.map((item) => item.id),
+    [neighboringAssets],
+  );
+  const readyPrefetchAssets = useMemo(
+    () => neighboringAssets.filter((item) => prefetchedPreviewItems[item.id]?.status === "ready" && prefetchedPreviewItems[item.id]?.preview_url),
+    [neighboringAssets, prefetchedPreviewItems],
+  );
+  const currentPrefetchedPreviewUrl = assetId ? prefetchedPreviewObjectUrls[assetId] ?? null : null;
+
+  const handleEnsureResponse = useCallback((items: AssetPreviewEnsureItem[]) => {
+    setPrefetchedPreviewItems((current) => mergePreviewItems(current, items));
+  }, []);
+
+  useEffect(() => {
+    if (!assetId || neighboringAssetIds.length === 0) {
+      return;
+    }
+
+    let cancelled = false;
+    let timeoutId: number | null = null;
+
+    const loadNeighbors = async () => {
+      try {
+        const response = await ensureAssetPreviews(neighboringAssetIds, "low");
+        if (cancelled) {
+          return;
+        }
+        setPrefetchedPreviewItems((current) => mergePreviewItems(current, response.items));
+
+        const pendingNeighbors = response.items.some(
+          (item) => item.status === "generating" || (item.status === "ready" && !item.preview_url),
+        );
+        if (pendingNeighbors) {
+          timeoutId = window.setTimeout(() => {
+            void loadNeighbors();
+          }, 1500);
+        }
+      } catch {
+        if (cancelled) {
+          return;
+        }
+      }
+    };
+
+    void loadNeighbors();
+
+    return () => {
+      cancelled = true;
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId);
+      }
+    };
+  }, [assetId, neighboringAssetIds]);
+
+  useEffect(() => {
+    if (!assetId) {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        onClose();
+        return;
+      }
+      if (event.key === "ArrowLeft" && previousAsset && onSelectAsset) {
+        event.preventDefault();
+        onSelectAsset(previousAsset.id);
+      }
+      if (event.key === "ArrowRight" && nextAsset && onSelectAsset) {
+        event.preventDefault();
+        onSelectAsset(nextAsset.id);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [assetId, nextAsset, onClose, onSelectAsset, previousAsset]);
+
+  useEffect(() => {
+    if (readyPrefetchAssets.length === 0) {
+      return;
+    }
+
+    const abortControllers: AbortController[] = [];
+
+    for (const asset of readyPrefetchAssets) {
+      const previewUrl = prefetchedPreviewItems[asset.id]?.preview_url;
+      if (!previewUrl || prefetchedPreviewObjectUrls[asset.id] || prefetchedPreviewUrlsRef.current.has(previewUrl)) {
+        continue;
+      }
+
+      prefetchedPreviewUrlsRef.current.add(previewUrl);
+      const controller = new AbortController();
+      abortControllers.push(controller);
+
+      void (async () => {
+        try {
+          const response = await fetch(previewUrl, {
+            signal: controller.signal,
+            credentials: "same-origin",
+            cache: "force-cache",
+          });
+          if (!response.ok) {
+            throw new Error(`Failed to prefetch preview: ${response.status}`);
+          }
+          const blob = await response.blob();
+          if (controller.signal.aborted) {
+            return;
+          }
+          const objectUrl = URL.createObjectURL(blob);
+          setPrefetchedPreviewObjectUrls((current) => {
+            const previousObjectUrl = current[asset.id];
+            if (previousObjectUrl) {
+              URL.revokeObjectURL(previousObjectUrl);
+            }
+            const next = { ...current, [asset.id]: objectUrl };
+            prefetchedObjectUrlsRef.current = next;
+            return next;
+          });
+        } catch {
+          if (controller.signal.aborted) {
+            return;
+          }
+          prefetchedPreviewUrlsRef.current.delete(previewUrl);
+        }
+      })();
+    }
+
+    return () => {
+      for (const controller of abortControllers) {
+        controller.abort();
+      }
+    };
+  }, [prefetchedPreviewItems, prefetchedPreviewObjectUrls, readyPrefetchAssets]);
 
   if (!assetId || !mounted) {
     return null;
@@ -137,9 +336,7 @@ export function AssetDetailModal({ assetId, onClose, thumbnailPersonId = null }:
 
   const isVideo = Boolean(data?.mime_type?.startsWith("video/"));
   const isImage = Boolean(data && !isVideo);
-  const fallbackThumbnailUrl = data
-    ? `/media/processed/assets/${data.id}/small.webp`
-    : null;
+  const fallbackThumbnailUrl = data?.small_thumbnail_url ?? null;
 
   return createPortal(
     <div
@@ -155,23 +352,46 @@ export function AssetDetailModal({ assetId, onClose, thumbnailPersonId = null }:
             <h2 className="text-lg font-semibold text-white">Asset Metadata</h2>
             <p className="text-xs text-slate-400">{assetId}</p>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-full border border-white/10 p-2 text-slate-300 transition hover:bg-white/10 hover:text-white"
-          >
-            <X className="h-4 w-4" />
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => previousAsset && onSelectAsset?.(previousAsset.id)}
+              disabled={!previousAsset || !onSelectAsset}
+              className="rounded-full border border-white/10 p-2 text-slate-300 transition hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+              aria-label="Previous asset"
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              onClick={() => nextAsset && onSelectAsset?.(nextAsset.id)}
+              disabled={!nextAsset || !onSelectAsset}
+              className="rounded-full border border-white/10 p-2 text-slate-300 transition hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+              aria-label="Next asset"
+            >
+              <ChevronRight className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-full border border-white/10 p-2 text-slate-300 transition hover:bg-white/10 hover:text-white"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
         </div>
         <div className="grid min-h-0 flex-1 gap-0 md:grid-cols-[1.1fr_0.9fr]">
-          <div className="border-b border-white/10 bg-black/20 md:border-b-0 md:border-r">
+          <div className="relative border-b border-white/10 bg-black/20 md:border-b-0 md:border-r">
             {data ? (
               isVideo ? (
                 <AuthenticatedPreview
                   assetId={data.id}
                   previewUrl={data.preview_url}
+                  prefetchedPreviewUrl={currentPrefetchedPreviewUrl}
                   mimeType={data.mime_type}
                   alt={data.master_path}
+                  ensureAssetIds={neighboringAssetIds}
+                  onEnsureResponse={handleEnsureResponse}
                   className="relative h-full w-full"
                   videoClassName="h-full w-full object-contain"
                   queuedMessage={
@@ -186,9 +406,12 @@ export function AssetDetailModal({ assetId, onClose, thumbnailPersonId = null }:
                     <AuthenticatedPreview
                       assetId={data.id}
                       previewUrl={data.preview_url}
+                      prefetchedPreviewUrl={currentPrefetchedPreviewUrl}
                       mimeType={data.mime_type}
                       alt={data.master_path}
                       fallbackUrl={fallbackThumbnailUrl}
+                      ensureAssetIds={neighboringAssetIds}
+                      onEnsureResponse={handleEnsureResponse}
                       className="relative"
                       imageClassName="block max-h-[calc(85vh-9rem)] max-w-full object-contain"
                     />
@@ -223,6 +446,22 @@ export function AssetDetailModal({ assetId, onClose, thumbnailPersonId = null }:
                 {isLoading ? "Loading preview..." : "Preview unavailable"}
               </div>
             )}
+
+            {readyPrefetchAssets.length > 0 ? (
+              <div className="pointer-events-none absolute -left-[9999px] top-0 h-px w-px overflow-hidden opacity-0">
+                {readyPrefetchAssets.map((asset) => {
+                  const objectUrl = prefetchedPreviewObjectUrls[asset.id];
+                  if (!objectUrl) {
+                    return null;
+                  }
+                  return asset.mime_type.startsWith("video/") ? (
+                    <video key={asset.id} src={objectUrl} preload="auto" muted playsInline className="h-px w-px" />
+                  ) : (
+                    <img key={asset.id} src={objectUrl} alt="" className="h-px w-px object-contain" />
+                  );
+                })}
+              </div>
+            ) : null}
           </div>
           <div className="scrollbar-thin overflow-y-auto px-5 py-4">
             {isLoading ? <p className="text-sm text-slate-400">Loading asset details...</p> : null}

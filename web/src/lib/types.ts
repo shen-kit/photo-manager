@@ -130,6 +130,7 @@ export type AssetDetail = {
   tags: AssetTag[];
   people: PersonSummary[];
   faces: FaceSummary[];
+  small_thumbnail_url: string;
   preview_url: string;
   created_at: string;
 };
@@ -328,6 +329,7 @@ export type TrashAssetDetail = {
   tags: AssetTag[];
   people: PersonSummary[];
   faces: FaceSummary[];
+  small_thumbnail_url: string;
   preview_url: string;
   created_at: string;
 };

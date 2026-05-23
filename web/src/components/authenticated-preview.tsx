@@ -11,10 +11,12 @@ type PreviewState = "idle" | "loading" | "ready" | "generating" | "error";
 type AuthenticatedPreviewProps = {
   assetId: string;
   previewUrl: string | null | undefined;
+  prefetchedPreviewUrl?: string | null;
   mimeType: string;
   alt: string;
   fallbackUrl?: string | null;
   ensureAssetIds?: string[];
+  onEnsureResponse?: (items: AssetPreviewEnsureItem[]) => void;
   className?: string;
   imageClassName?: string;
   videoClassName?: string;
@@ -46,10 +48,12 @@ function resultMessage(item: AssetPreviewEnsureItem | null, fallback: string) {
 export function AuthenticatedPreview({
   assetId,
   previewUrl,
+  prefetchedPreviewUrl,
   mimeType,
   alt,
   fallbackUrl,
   ensureAssetIds,
+  onEnsureResponse,
   className,
   imageClassName,
   videoClassName,
@@ -57,7 +61,7 @@ export function AuthenticatedPreview({
   errorMessage = "Preview unavailable.",
 }: AuthenticatedPreviewProps) {
   const [resolvedPreviewUrl, setResolvedPreviewUrl] = useState<string | null>(
-    previewUrl ?? null,
+    prefetchedPreviewUrl ?? previewUrl ?? null,
   );
   const [state, setState] = useState<PreviewState>("idle");
   const [message, setMessage] = useState<string>("");
@@ -67,7 +71,7 @@ export function AuthenticatedPreview({
     let timeoutId: number | null = null;
 
     const load = async () => {
-      setState("loading");
+      setState(prefetchedPreviewUrl ? "ready" : "loading");
       setMessage("");
       try {
         const requestedAssetIds = Array.from(
@@ -77,6 +81,7 @@ export function AuthenticatedPreview({
         if (cancelled) {
           return;
         }
+        onEnsureResponse?.(response.items);
         const item = response.items.find((entry) => entry.asset_id === assetId) ?? null;
         if (!item) {
           setState("error");
@@ -84,14 +89,16 @@ export function AuthenticatedPreview({
           return;
         }
         if (item.status === "ready" && item.preview_url) {
-          setResolvedPreviewUrl(item.preview_url);
+          setResolvedPreviewUrl(prefetchedPreviewUrl ?? item.preview_url);
           setState("ready");
           return;
         }
         if (item.status === "generating") {
-          setResolvedPreviewUrl(previewUrl ?? null);
-          setState("generating");
-          setMessage(queuedMessage);
+          setResolvedPreviewUrl(prefetchedPreviewUrl ?? previewUrl ?? null);
+          if (!prefetchedPreviewUrl) {
+            setState("generating");
+            setMessage(queuedMessage);
+          }
           timeoutId = window.setTimeout(() => {
             void load();
           }, 3000);
@@ -108,7 +115,7 @@ export function AuthenticatedPreview({
       }
     };
 
-    setResolvedPreviewUrl(previewUrl ?? null);
+    setResolvedPreviewUrl(prefetchedPreviewUrl ?? previewUrl ?? null);
     void load();
 
     return () => {
@@ -117,7 +124,7 @@ export function AuthenticatedPreview({
         window.clearTimeout(timeoutId);
       }
     };
-  }, [assetId, ensureAssetIds, errorMessage, previewUrl, queuedMessage]);
+  }, [assetId, ensureAssetIds, errorMessage, onEnsureResponse, prefetchedPreviewUrl, previewUrl, queuedMessage]);
 
   const isVideo = mimeType.startsWith("video/");
 

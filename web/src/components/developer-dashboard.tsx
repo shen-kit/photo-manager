@@ -70,6 +70,10 @@ export function DeveloperDashboard() {
 
   const assetPages = assetsQuery.data?.pages ?? [];
   const assets = useMemo(() => assetPages.flatMap((page) => page.items), [assetPages]);
+  const assetNavigationItems = useMemo(
+    () => assets.map((asset) => ({ id: asset.id, mime_type: asset.mime_type })),
+    [assets],
+  );
 
   const scanMutation = useMutation({
     mutationFn: scanAssets,
@@ -448,7 +452,12 @@ export function DeveloperDashboard() {
           </div>
       </AppShell>
 
-      <AssetDetailModal assetId={selectedAssetId} onClose={() => setSelectedAssetId(null)} />
+      <AssetDetailModal
+        assetId={selectedAssetId}
+        onClose={() => setSelectedAssetId(null)}
+        onSelectAsset={setSelectedAssetId}
+        navigationItems={assetNavigationItems}
+      />
     </>
   );
 }

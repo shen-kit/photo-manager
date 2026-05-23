@@ -79,6 +79,10 @@ export function SearchPage() {
     () => searchQuery.data?.pages.flatMap((page) => page.items) ?? [],
     [searchQuery.data?.pages],
   );
+  const resultNavigationItems = useMemo(
+    () => results.map((asset) => ({ id: asset.id, mime_type: asset.mime_type })),
+    [results],
+  );
   const people = peopleQuery.data ?? [];
   const selectedPeople = people.filter((person) => selectedPersonIds.includes(person.id));
 
@@ -345,7 +349,12 @@ export function SearchPage() {
         </div>
       </AppShell>
 
-      <AssetDetailModal assetId={selectedAssetId} onClose={() => setSelectedAssetId(null)} />
+      <AssetDetailModal
+        assetId={selectedAssetId}
+        onClose={() => setSelectedAssetId(null)}
+        onSelectAsset={setSelectedAssetId}
+        navigationItems={resultNavigationItems}
+      />
     </>
   );
 }

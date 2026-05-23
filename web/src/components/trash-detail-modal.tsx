@@ -49,9 +49,7 @@ export function TrashDetailModal({ assetId, onClose }: TrashDetailModalProps) {
 
   const asset = detailQuery.data;
   const isVideo = asset?.mime_type?.startsWith("video/");
-  const fallbackThumbnailUrl = asset
-    ? `/media/processed/assets/${asset.id}/small.webp`
-    : null;
+  const fallbackThumbnailUrl = asset?.small_thumbnail_url ?? null;
 
   return createPortal(
     <div

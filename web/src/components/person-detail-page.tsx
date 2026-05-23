@@ -93,6 +93,10 @@ export function PersonDetailPage({ personId }: { personId: string }) {
     () => assetsQuery.data?.pages.flatMap((page) => page.items) ?? [],
     [assetsQuery.data?.pages],
   );
+  const assetNavigationItems = useMemo(
+    () => assets.map((asset) => ({ id: asset.id, mime_type: asset.mime_type })),
+    [assets],
+  );
   const mergeOptions = useMemo(
     () => (peopleQuery.data ?? []).filter((candidate) => candidate.id !== personId),
     [peopleQuery.data, personId],
@@ -338,6 +342,8 @@ export function PersonDetailPage({ personId }: { personId: string }) {
       <AssetDetailModal
         assetId={selectedAssetId}
         onClose={() => setSelectedAssetId(null)}
+        onSelectAsset={setSelectedAssetId}
+        navigationItems={assetNavigationItems}
         thumbnailPersonId={personId}
       />
     </>

@@ -76,6 +76,10 @@ export function TimelinePage() {
     () => assetsQuery.data?.pages.flatMap((page) => page.items) ?? [],
     [assetsQuery.data?.pages],
   );
+  const assetNavigationItems = useMemo(
+    () => assetItems.map((asset) => ({ id: asset.id, mime_type: asset.mime_type })),
+    [assetItems],
+  );
   const people = peopleQuery.data ?? [];
 
   if (isBootstrapping) {
@@ -270,7 +274,12 @@ export function TimelinePage() {
         </div>
       </AppShell>
 
-      <AssetDetailModal assetId={selectedAssetId} onClose={() => setSelectedAssetId(null)} />
+      <AssetDetailModal
+        assetId={selectedAssetId}
+        onClose={() => setSelectedAssetId(null)}
+        onSelectAsset={setSelectedAssetId}
+        navigationItems={assetNavigationItems}
+      />
     </>
   );
 }
