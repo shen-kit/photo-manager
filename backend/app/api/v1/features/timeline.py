@@ -15,6 +15,7 @@ from app.services.assets.browse import (
     get_asset_browse_service,
 )
 from app.services.people.service import PeopleService, get_people_service
+from app.services.tags.service import TagService, get_tag_service
 
 router = APIRouter()
 
@@ -67,6 +68,24 @@ def _parse_person_ids(raw_person_ids: str | None) -> tuple[UUID, ...]:
     return tuple(dict.fromkeys(values))
 
 
+def _parse_tag_ids(raw_tag_ids: str | None) -> tuple[int, ...]:
+    if raw_tag_ids is None or not raw_tag_ids.strip():
+        return ()
+    values: list[int] = []
+    for item in raw_tag_ids.split(","):
+        normalized = item.strip()
+        if not normalized:
+            continue
+        try:
+            values.append(int(normalized))
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="tag_ids must be a comma-separated list of integers",
+            ) from exc
+    return tuple(dict.fromkeys(values))
+
+
 def _build_timeline_cover(
     request: Request,
     cover: TimelineBucketCover | None,
@@ -86,16 +105,20 @@ def list_timeline_months(
     request: Request,
     media_kind: str | None = Query(default=None),
     person_ids: str | None = Query(default=None),
+    tag_ids: str | None = Query(default=None),
     browse_service: AssetBrowseService = Depends(get_asset_browse_service),
     people_service: PeopleService = Depends(get_people_service),
+    tag_service: TagService = Depends(get_tag_service),
     current_user: User = Depends(get_current_user),
 ) -> list[TimelineMonthBucketResponse]:
     del current_user
+    parsed_tag_ids = tag_service.validate_tag_ids(list(_parse_tag_ids(tag_ids)))
     filters = AssetGridFilters(
         media_kind=media_kind,
         person_ids=tuple(
             people_service.validate_person_ids(list(_parse_person_ids(person_ids)))
         ),
+        tag_ids=tuple(parsed_tag_ids),
     )
     buckets = browse_service.list_timeline_months(filters=filters)
     return [
@@ -116,16 +139,20 @@ def list_timeline_days(
     month: date = Query(...),
     media_kind: str | None = Query(default=None),
     person_ids: str | None = Query(default=None),
+    tag_ids: str | None = Query(default=None),
     browse_service: AssetBrowseService = Depends(get_asset_browse_service),
     people_service: PeopleService = Depends(get_people_service),
+    tag_service: TagService = Depends(get_tag_service),
     current_user: User = Depends(get_current_user),
 ) -> list[TimelineDayBucketResponse]:
     del current_user
+    parsed_tag_ids = tag_service.validate_tag_ids(list(_parse_tag_ids(tag_ids)))
     filters = AssetGridFilters(
         media_kind=media_kind,
         person_ids=tuple(
             people_service.validate_person_ids(list(_parse_person_ids(person_ids)))
         ),
+        tag_ids=tuple(parsed_tag_ids),
     )
     buckets = browse_service.list_timeline_days(filters=filters, month=month)
     return [

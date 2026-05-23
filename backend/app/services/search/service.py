@@ -34,10 +34,11 @@ class SearchCursor:
     asset_id: UUID | None = None
 
 
-def _scope(*, query: str, person_ids: list[UUID]) -> str:
+def _scope(*, query: str, person_ids: list[UUID], tag_ids: list[int]) -> str:
     payload = {
         "query": query,
         "person_ids": [str(person_id) for person_id in person_ids],
+        "tag_ids": tag_ids,
     }
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -48,11 +49,12 @@ def _encode_search_cursor(
     *,
     query: str,
     person_ids: list[UUID],
+    tag_ids: list[int],
     row: AssetEmbeddingSearchRow,
 ) -> str:
     payload = {
         "v": 1,
-        "scope": _scope(query=query, person_ids=person_ids),
+        "scope": _scope(query=query, person_ids=person_ids, tag_ids=tag_ids),
         "distance": row.distance,
         "timeline_at": row.asset.timeline_at.isoformat(),
         "asset_id": str(row.asset.id),
@@ -67,6 +69,7 @@ def _decode_search_cursor(
     *,
     query: str,
     person_ids: list[UUID],
+    tag_ids: list[int],
 ) -> SearchCursor | None:
     if cursor is None:
         return None
@@ -85,7 +88,7 @@ def _decode_search_cursor(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid cursor",
         ) from exc
-    expected_scope = _scope(query=query, person_ids=person_ids)
+    expected_scope = _scope(query=query, person_ids=person_ids, tag_ids=tag_ids)
     if scope != expected_scope:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -120,9 +123,11 @@ class SearchService:
         limit: int,
         cursor: str | None,
         person_ids: list[UUID] | None = None,
+        tag_ids: list[int] | None = None,
     ) -> SearchResults:
         normalized = query.strip() if query else ""
         validated_person_ids = self.people_service.validate_person_ids(person_ids or [])
+        normalized_tag_ids = list(dict.fromkeys(tag_ids or []))
         if not normalized and not validated_person_ids:
             raise EmbeddingServiceError(
                 "Search query or person_ids filter must be provided"
@@ -131,6 +136,7 @@ class SearchService:
             cursor,
             query=normalized,
             person_ids=validated_person_ids,
+            tag_ids=normalized_tag_ids,
         )
 
         if normalized:
@@ -145,6 +151,7 @@ class SearchService:
                 cursor_timeline_at=parsed_cursor.timeline_at if parsed_cursor else None,
                 cursor_asset_id=parsed_cursor.asset_id if parsed_cursor else None,
                 person_ids=validated_person_ids,
+                tag_ids=normalized_tag_ids,
             )
         else:
             items = self.embedding_repository.list_assets_for_people(
@@ -152,6 +159,7 @@ class SearchService:
                 limit=limit + 1,
                 cursor_timeline_at=parsed_cursor.timeline_at if parsed_cursor else None,
                 cursor_asset_id=parsed_cursor.asset_id if parsed_cursor else None,
+                tag_ids=normalized_tag_ids,
             )
         has_more = len(items) > limit
         page_items = items[:limit]
@@ -160,6 +168,7 @@ class SearchService:
             next_cursor = _encode_search_cursor(
                 query=normalized,
                 person_ids=validated_person_ids,
+                tag_ids=normalized_tag_ids,
                 row=page_items[-1],
             )
         return SearchResults(

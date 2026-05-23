@@ -43,8 +43,14 @@ class _FakeEmbeddingRepository:
         self.people_count_calls = []
         self.people_list_calls = []
 
-    def count_searchable_assets(self, *, model_id: int, person_ids: list | None = None):
-        self.count_calls.append((model_id, person_ids))
+    def count_searchable_assets(
+        self,
+        *,
+        model_id: int,
+        person_ids: list | None = None,
+        tag_ids: list | None = None,
+    ):
+        self.count_calls.append((model_id, person_ids, tag_ids))
         return len(self.rows)
 
     def search_similar_assets(
@@ -57,6 +63,7 @@ class _FakeEmbeddingRepository:
         cursor_timeline_at=None,
         cursor_asset_id=None,
         person_ids=None,
+        tag_ids=None,
     ):
         self.search_calls.append(
             (
@@ -67,6 +74,7 @@ class _FakeEmbeddingRepository:
                 cursor_timeline_at,
                 cursor_asset_id,
                 person_ids,
+                tag_ids,
             )
         )
         return list(self.rows)
@@ -82,9 +90,10 @@ class _FakeEmbeddingRepository:
         limit: int,
         cursor_timeline_at=None,
         cursor_asset_id=None,
+        tag_ids=None,
     ):
         self.people_list_calls.append(
-            (person_ids, limit, cursor_timeline_at, cursor_asset_id)
+            (person_ids, limit, cursor_timeline_at, cursor_asset_id, tag_ids)
         )
         return list(self.rows)
 
@@ -132,7 +141,7 @@ class SearchServiceTest(unittest.TestCase):
         self.assertEqual(embedding_service.calls, [])
         self.assertEqual(
             embedding_repository.people_list_calls,
-            [(person_ids, 11, None, None)],
+            [(person_ids, 11, None, None, [])],
         )
 
     def test_text_search_with_people_filters_passes_validated_ids(self) -> None:
@@ -161,7 +170,7 @@ class SearchServiceTest(unittest.TestCase):
         self.assertEqual(people_service.calls, [requested_ids])
         self.assertEqual(
             embedding_repository.search_calls,
-            [(11, [0.1, 0.2], 26, None, None, None, validated_ids)],
+            [(11, [0.1, 0.2], 26, None, None, None, validated_ids, [])],
         )
 
     def test_requires_query_or_people_filter(self) -> None:

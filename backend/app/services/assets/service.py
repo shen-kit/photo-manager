@@ -422,8 +422,14 @@ class AssetService:
                         Tag.id,
                         "name",
                         Tag.name,
+                        "slug",
+                        Tag.slug,
                         "path",
                         Tag.path,
+                        "is_album",
+                        Tag.is_album,
+                        "cover_asset_id",
+                        Tag.cover_asset_id,
                     )
                 ).label("tags"),
             )

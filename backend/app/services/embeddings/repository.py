@@ -8,6 +8,7 @@ from sqlalchemy import case, func, text
 from sqlmodel import Session, select
 
 from app.models import Asset, Face
+from app.services.tags.filtering import matching_assets_by_tag_filters_subquery
 
 
 @dataclass(frozen=True)
@@ -91,22 +92,27 @@ class EmbeddingRepository:
         *,
         model_id: int,
         person_ids: list[UUID] | None = None,
+        tag_ids: list[int] | None = None,
     ) -> int:
         person_ids = person_ids or []
+        tag_ids = tag_ids or []
         if not person_ids:
-            rows = self.session.execute(
-                text(
-                    """
-                    SELECT count(*)
-                    FROM assets
-                    WHERE deleted_at IS NULL
-                      AND search_vector IS NOT NULL
-                      AND search_model_id = :model_id
-                    """
-                ),
-                {"model_id": model_id},
+            statement = (
+                select(func.count())
+                .select_from(Asset)
+                .where(
+                    Asset.deleted_at.is_(None),
+                    Asset.search_vector.is_not(None),
+                    Asset.search_model_id == model_id,
+                )
             )
-            return int(rows.scalar_one())
+            if tag_ids:
+                matching_tags = matching_assets_by_tag_filters_subquery(tag_ids)
+                if matching_tags is not None:
+                    statement = statement.join(
+                        matching_tags, matching_tags.c.asset_id == Asset.id
+                    )
+            return int(self.session.exec(statement).one())
         matching_assets = self._matching_assets_by_people_subquery(person_ids)
         statement = (
             select(func.count())
@@ -118,6 +124,12 @@ class EmbeddingRepository:
                 Asset.search_model_id == model_id,
             )
         )
+        if tag_ids:
+            matching_tags = matching_assets_by_tag_filters_subquery(tag_ids)
+            if matching_tags is not None:
+                statement = statement.join(
+                    matching_tags, matching_tags.c.asset_id == Asset.id
+                )
         return int(self.session.exec(statement).one())
 
     def search_similar_assets(
@@ -130,9 +142,12 @@ class EmbeddingRepository:
         cursor_timeline_at: datetime | None = None,
         cursor_asset_id: UUID | None = None,
         person_ids: list[UUID] | None = None,
+        tag_ids: list[int] | None = None,
     ) -> list[AssetEmbeddingSearchRow]:
         person_ids = person_ids or []
+        tag_ids = tag_ids or []
         people_join = ""
+        tag_join = ""
         where_clauses = [
             "deleted_at IS NULL",
             "search_vector IS NOT NULL",
@@ -157,6 +172,20 @@ class EmbeddingRepository:
             """
             parameters["person_ids"] = person_ids
             parameters["person_count"] = len(person_ids)
+        if tag_ids:
+            tag_join = """
+                JOIN (
+                    SELECT asset_tags.asset_id
+                    FROM asset_tags
+                    JOIN tags assigned_tag ON assigned_tag.id = asset_tags.tag_id
+                    JOIN tags selected_tag ON assigned_tag.path <@ selected_tag.path
+                    WHERE selected_tag.id = ANY(CAST(:tag_ids AS integer[]))
+                    GROUP BY asset_tags.asset_id
+                    HAVING count(DISTINCT selected_tag.id) = :tag_count
+                ) AS matched_tags ON matched_tags.asset_id = assets.id
+            """
+            parameters["tag_ids"] = tag_ids
+            parameters["tag_count"] = len(tag_ids)
         if (
             cursor_distance is not None
             and cursor_timeline_at is not None
@@ -185,6 +214,7 @@ class EmbeddingRepository:
                 SELECT id, search_vector <=> CAST(:query_vector AS vector) AS distance
                 FROM assets
                 {people_join}
+                {tag_join}
                 WHERE {" AND ".join(where_clauses)}
                 ORDER BY search_vector <=> CAST(:query_vector AS vector), timeline_at DESC, id DESC
                 LIMIT :limit
@@ -224,6 +254,7 @@ class EmbeddingRepository:
         limit: int,
         cursor_timeline_at: datetime | None = None,
         cursor_asset_id: UUID | None = None,
+        tag_ids: list[int] | None = None,
     ) -> list[AssetEmbeddingSearchRow]:
         matching_assets = self._matching_assets_by_people_subquery(person_ids)
         statement = (
@@ -231,6 +262,12 @@ class EmbeddingRepository:
             .join(matching_assets, matching_assets.c.asset_id == Asset.id)
             .where(Asset.deleted_at.is_(None))
         )
+        if tag_ids:
+            matching_tags = matching_assets_by_tag_filters_subquery(tag_ids)
+            if matching_tags is not None:
+                statement = statement.join(
+                    matching_tags, matching_tags.c.asset_id == Asset.id
+                )
         if cursor_timeline_at is not None and cursor_asset_id is not None:
             statement = statement.where(
                 (Asset.timeline_at < cursor_timeline_at)

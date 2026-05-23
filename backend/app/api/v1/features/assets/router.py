@@ -30,6 +30,7 @@ from app.services.assets.preview import AssetPreviewService, normalize_preview_p
 from app.services.assets.service import AssetService, get_asset_service
 from app.services.assets.urls import build_preview_url, build_thumbnail_url
 from app.services.people.service import PeopleService, get_people_service
+from app.services.tags.service import TagService, get_tag_service
 
 router = APIRouter()
 
@@ -62,7 +63,10 @@ class AssetGridPageResponse(SQLModel):
 class TagSummary(SQLModel):
     id: int
     name: str
+    slug: str
     path: str
+    is_album: bool = False
+    cover_asset_id: UUID | None = None
 
 
 class PersonSummary(SQLModel):
@@ -132,6 +136,15 @@ class AssetPreviewEnsureRequest(SQLModel):
     priority: str = "low"
 
 
+class AssetTagBatchRequest(SQLModel):
+    asset_ids: list[UUID] = Field(min_length=1, max_length=500)
+    tag_ids: list[int] = Field(min_length=1, max_length=100)
+
+
+class AssetTagBatchResponse(SQLModel):
+    updated_count: int
+
+
 class AssetPreviewEnsureItemResponse(SQLModel):
     asset_id: UUID
     status: str
@@ -175,6 +188,24 @@ def _parse_person_ids(raw_person_ids: str | None) -> tuple[UUID, ...]:
         seen.add(value)
         unique_values.append(value)
     return tuple(unique_values)
+
+
+def _parse_tag_ids(raw_tag_ids: str | None) -> tuple[int, ...]:
+    if raw_tag_ids is None or not raw_tag_ids.strip():
+        return ()
+    values: list[int] = []
+    for item in raw_tag_ids.split(","):
+        normalized = item.strip()
+        if not normalized:
+            continue
+        try:
+            values.append(int(normalized))
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="tag_ids must be a comma-separated list of integers",
+            ) from exc
+    return tuple(dict.fromkeys(values))
 
 
 def _build_ingest_response(
@@ -322,11 +353,14 @@ def list_assets(
     month: date | None = Query(default=None),
     day: date | None = Query(default=None),
     person_ids: str | None = Query(default=None),
+    tag_ids: str | None = Query(default=None),
     browse_service: AssetBrowseService = Depends(get_asset_browse_service),
     people_service: PeopleService = Depends(get_people_service),
+    tag_service: TagService = Depends(get_tag_service),
     current_user: User = Depends(get_current_user),
 ) -> AssetGridPageResponse:
     del current_user
+    parsed_tag_ids = tag_service.validate_tag_ids(list(_parse_tag_ids(tag_ids)))
     filters = AssetGridFilters(
         media_kind=media_kind,
         month=month,
@@ -334,6 +368,7 @@ def list_assets(
         person_ids=tuple(
             people_service.validate_person_ids(list(_parse_person_ids(person_ids)))
         ),
+        tag_ids=tuple(parsed_tag_ids),
     )
     page = browse_service.list_asset_grid_page(
         filters=filters,
@@ -405,6 +440,58 @@ def update_asset(
     updates = payload.model_dump(exclude_unset=True)
     asset, tags, faces = asset_service.update_asset(asset_id, updates)
     return _build_detail_response(request, asset, tags, faces)
+
+
+@router.post("/{asset_id}/tags/{tag_id}", status_code=status.HTTP_204_NO_CONTENT)
+def add_asset_tag(
+    asset_id: UUID,
+    tag_id: int,
+    tag_service: TagService = Depends(get_tag_service),
+    current_user: User = Depends(get_current_user),
+) -> Response:
+    del current_user
+    tag_service.add_tag_to_asset(asset_id=asset_id, tag_id=tag_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.delete("/{asset_id}/tags/{tag_id}", status_code=status.HTTP_204_NO_CONTENT)
+def remove_asset_tag(
+    asset_id: UUID,
+    tag_id: int,
+    tag_service: TagService = Depends(get_tag_service),
+    current_user: User = Depends(get_current_user),
+) -> Response:
+    del current_user
+    tag_service.remove_tag_from_asset(asset_id=asset_id, tag_id=tag_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/tags:batch-add", response_model=AssetTagBatchResponse)
+def batch_add_asset_tags(
+    payload: AssetTagBatchRequest,
+    tag_service: TagService = Depends(get_tag_service),
+    current_user: User = Depends(get_current_user),
+) -> AssetTagBatchResponse:
+    del current_user
+    updated_count = tag_service.batch_add_tags(
+        asset_ids=payload.asset_ids,
+        tag_ids=payload.tag_ids,
+    )
+    return AssetTagBatchResponse(updated_count=updated_count)
+
+
+@router.post("/tags:batch-remove", response_model=AssetTagBatchResponse)
+def batch_remove_asset_tags(
+    payload: AssetTagBatchRequest,
+    tag_service: TagService = Depends(get_tag_service),
+    current_user: User = Depends(get_current_user),
+) -> AssetTagBatchResponse:
+    del current_user
+    updated_count = tag_service.batch_remove_tags(
+        asset_ids=payload.asset_ids,
+        tag_ids=payload.tag_ids,
+    )
+    return AssetTagBatchResponse(updated_count=updated_count)
 
 
 @router.delete("/{asset_id}", status_code=status.HTTP_204_NO_CONTENT)

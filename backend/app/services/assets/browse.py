@@ -14,6 +14,7 @@ from sqlmodel import Session
 
 from app.core.database import get_session
 from app.models import Asset, Face
+from app.services.tags.filtering import matching_assets_by_tag_filters_subquery
 
 DEFAULT_GRID_LIMIT = 100
 MAX_GRID_LIMIT = 200
@@ -26,6 +27,7 @@ class AssetGridFilters:
     month: date | None = None
     day: date | None = None
     person_ids: tuple[UUID, ...] = ()
+    tag_ids: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -89,6 +91,7 @@ def _cursor_scope(filters: AssetGridFilters) -> str:
         "month": filters.month.isoformat() if filters.month else None,
         "day": filters.day.isoformat() if filters.day else None,
         "person_ids": [str(person_id) for person_id in filters.person_ids],
+        "tag_ids": list(filters.tag_ids),
     }
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -358,6 +361,12 @@ class AssetBrowseRepository:
             statement = statement.join(
                 matched_people, matched_people.c.asset_id == Asset.id
             )
+        if filters.tag_ids:
+            matched_tags = matching_assets_by_tag_filters_subquery(filters.tag_ids)
+            if matched_tags is not None:
+                statement = statement.join(
+                    matched_tags, matched_tags.c.asset_id == Asset.id
+                )
         return statement.subquery()
 
 

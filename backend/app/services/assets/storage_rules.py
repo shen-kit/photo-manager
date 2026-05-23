@@ -268,7 +268,9 @@ class StorageRulesService:
         dry_run: bool,
     ) -> StorageRuleAction:
         if asset.master_path == target_master_path:
-            return StorageRuleAction(kind="already_compliant", target_master_path=target_master_path)
+            return StorageRuleAction(
+                kind="already_compliant", target_master_path=target_master_path
+            )
 
         if source_path is None:
             return StorageRuleAction(
@@ -281,11 +283,15 @@ class StorageRulesService:
 
         if source_exists and not target_exists:
             if dry_run:
-                return StorageRuleAction(kind="planned", target_master_path=target_master_path)
+                return StorageRuleAction(
+                    kind="planned", target_master_path=target_master_path
+                )
             target_path.parent.mkdir(parents=True, exist_ok=True)
             source_path.rename(target_path)
             asset.master_path = target_master_path
-            return StorageRuleAction(kind="moved", target_master_path=target_master_path)
+            return StorageRuleAction(
+                kind="moved", target_master_path=target_master_path
+            )
 
         if not source_exists and target_exists:
             asset.master_path = target_master_path
@@ -307,9 +313,13 @@ class StorageRulesService:
                     kind="reconciled_db_stale",
                     target_master_path=target_master_path,
                 )
-            return StorageRuleAction(kind="target_conflict", target_master_path=target_master_path)
+            return StorageRuleAction(
+                kind="target_conflict", target_master_path=target_master_path
+            )
 
-        return StorageRuleAction(kind="missing_source", target_master_path=target_master_path)
+        return StorageRuleAction(
+            kind="missing_source", target_master_path=target_master_path
+        )
 
     @staticmethod
     def _paths_represent_same_asset(
@@ -383,7 +393,9 @@ class StorageRulesService:
             parent_job_id,
             current=stats.processed_count,
             total=stats.total_count,
-            message="Applying storage rules" if not stats.dry_run else "Planning storage rules",
+            message="Applying storage rules"
+            if not stats.dry_run
+            else "Planning storage rules",
             result=stats.as_result(),
         )
 
@@ -438,7 +450,9 @@ class StorageRulesService:
                 key=lambda item: (-item[1], item[0]),
             )
         ]
-        return f"Storage rules failed for {stats.failed_count} assets: {', '.join(parts)}"
+        return (
+            f"Storage rules failed for {stats.failed_count} assets: {', '.join(parts)}"
+        )
 
     @staticmethod
     def _get_parent_status(parent_job_id: UUID) -> str | None:
@@ -457,7 +471,9 @@ class StorageRulesService:
     ) -> None:
         with Session(engine) as session:
             job_service = JobService(session)
-            job_service.update_progress(job_id, current=current, total=total, message=message)
+            job_service.update_progress(
+                job_id, current=current, total=total, message=message
+            )
             if result is not None:
                 job = job_service.get_job(job_id)
                 job.result = result

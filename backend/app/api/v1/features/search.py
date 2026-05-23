@@ -18,6 +18,7 @@ from app.services.search.schemas import (
     SearchResultItem,
 )
 from app.services.search.service import SearchService
+from app.services.tags.service import TagService, get_tag_service
 
 router = APIRouter()
 
@@ -40,6 +41,24 @@ def _parse_person_ids(raw_person_ids: str | None) -> list[UUID]:
     return values
 
 
+def _parse_tag_ids(raw_tag_ids: str | None) -> list[int]:
+    if raw_tag_ids is None or not raw_tag_ids.strip():
+        return []
+    values: list[int] = []
+    for item in raw_tag_ids.split(","):
+        normalized = item.strip()
+        if not normalized:
+            continue
+        try:
+            values.append(int(normalized))
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="tag_ids must be a comma-separated list of integers",
+            ) from exc
+    return list(dict.fromkeys(values))
+
+
 def _thumbnail_url(request: Request, asset_id: UUID) -> str:
     return (
         str(request.base_url).rstrip("/")
@@ -53,19 +72,23 @@ def search_assets(
     request: Request,
     query: str | None = Query(default=None),
     person_ids: str | None = Query(default=None),
+    tag_ids: str | None = Query(default=None),
     limit: int = Query(default=SEARCH_DEFAULT_LIMIT, ge=1, le=SEARCH_MAX_LIMIT),
     cursor: str | None = Query(default=None),
     session: Session = Depends(get_session),
+    tag_service: TagService = Depends(get_tag_service),
     current_user: User = Depends(get_current_user),
 ) -> SearchResponse:
     del current_user
     parsed_person_ids = _parse_person_ids(person_ids)
+    parsed_tag_ids = tag_service.validate_tag_ids(_parse_tag_ids(tag_ids))
     try:
         results = SearchService(session).search(
             query=query,
             limit=limit,
             cursor=cursor,
             person_ids=parsed_person_ids,
+            tag_ids=parsed_tag_ids,
         )
     except EmbeddingServiceError as exc:
         raise HTTPException(

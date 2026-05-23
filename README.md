@@ -1,6 +1,6 @@
 # Photo Manager
 
-Self-hosted photo and video management with a database-first design, cursor-based browsing, timeline navigation, derived previews, semantic search, face recognition, people management, and soft-delete trash flows.
+Self-hosted photo and video management with a database-first design, cursor-based browsing, timeline navigation, hierarchical tags and albums, derived previews, semantic search, face recognition, people management, and soft-delete trash flows.
 
 ## Overview
 
@@ -16,6 +16,8 @@ Self-hosted photo and video management with a database-first design, cursor-base
   - API-owned storage rules maintenance with dry-run planning and rerun-safe reconciliation.
   - Cursor-based active asset browsing for large libraries.
   - Timeline month/day APIs for jump-to-date scrolling.
+  - Hierarchical tags and albums backed by PostgreSQL `ltree`.
+  - Explicit asset tag assignment with single-item and batch APIs.
   - On-demand preview generation through a combined asset preview endpoint.
   - CLIP-based semantic search.
   - InsightFace face detection and face embedding storage.
@@ -34,7 +36,7 @@ Self-hosted photo and video management with a database-first design, cursor-base
 - `api`: FastAPI app.
 - `worker`: ARQ worker for metadata, batch thumbnail, preview, embedding, face, clustering, and scan jobs.
 - `api` also runs an internal executor for API-owned maintenance jobs that must mutate `storage/originals/`.
-- `web`: Next.js app in `web/`, currently run separately from `docker-compose.yml`.
+- `web`: Next.js app in `web/`, currently a development/testing frontend run separately from `docker-compose.yml`.
 
 ```mermaid
 flowchart LR
@@ -141,6 +143,7 @@ flowchart LR
   - active vs deleted asset access
   - people and face queries
   - vector nearest-neighbour queries
+  - tag hierarchy and descendant-aware filtering
 - Background worker entrypoints stay thin:
   - `backend/worker/tasks.py` delegates to service-level task functions
   - shared task/job lifecycle helpers live under `backend/app/services/jobs/`
@@ -174,7 +177,7 @@ The schema is defined in [backend/app/models.py](backend/app/models.py) and migr
 | `ai_model_defaults` | Current default model per task | `task`, `model_id`, `updated_at` |
 | `jobs` | Background job tracking | `type`, `status`, `progress_*`, `parameters`, `result`, `error_message` |
 | `notifications` | User-visible system events | `level`, `category`, `title`, `message`, `details`, `related_job_id`, `related_asset_id`, `read_at` |
-| `tags` | Hierarchical tags | `name`, `path`, `description` |
+| `tags` | Hierarchical tags and albums | `name`, `slug`, `path`, `is_album`, `description`, `cover_asset_id`, `created_at`, `updated_at` |
 | `asset_tags` | Asset-to-tag join table | `asset_id`, `tag_id` |
 | `users` | Local auth users | `username`, `password_hash`, `is_active` |
 | `refresh_tokens` | Refresh token rotation state | `user_id`, `token_hash`, `expires_at`, `revoked_at`, `replaced_by_token_id` |
@@ -204,6 +207,13 @@ The schema is defined in [backend/app/models.py](backend/app/models.py) and migr
   - `timeline_at` is the effective browse timestamp.
   - `timeline_day` and `timeline_month` are lightweight derived browse buckets.
   - `captured_at_local` stays as the raw local EXIF timestamp string so local calendar grouping remains regeneratable.
+- Tags and albums:
+  - albums are tags with `is_album = true`
+  - normal tags use `is_album = false`
+  - `slug` stores the ltree-safe leaf segment
+  - `path` is the unique hierarchical key used for descendant matching
+  - only explicit asset-tag joins are stored in `asset_tags`
+  - parent tag and album matches are derived at query time from descendant paths
 
 ### Extensions and indexes
 
@@ -225,6 +235,8 @@ The schema is defined in [backend/app/models.py](backend/app/models.py) and migr
   - `idx_faces_person_asset_active`
   - `idx_faces_face_model_id`
   - `idx_tags_path_gist`
+  - `idx_tags_is_album`
+  - `idx_tags_cover_asset_id`
 
 ## Storage layout
 
@@ -279,11 +291,6 @@ The schema is defined in [backend/app/models.py](backend/app/models.py) and migr
   - already compliant assets are skipped
   - moved-on-disk but stale-in-DB assets are reconciled
   - conflicting or missing-source assets are reported in the job result
-  - asset row
-  - face rows
-  - CLIP vectors on `assets`
-  - tag joins
-  - generated asset previews
 - People may be deleted if they no longer have any active assets.
 - Restoring an asset requires the original source file to still exist.
 - Restore can requeue lightweight metadata work if eager thumbnails are missing.
@@ -355,6 +362,7 @@ The schema is defined in [backend/app/models.py](backend/app/models.py) and migr
    - `month`
    - `day`
    - `person_ids`
+   - `tag_ids`
 5. `GET /api/v1/timeline/months` returns month buckets for scrollbar/jump navigation.
 6. `GET /api/v1/timeline/days?month=YYYY-MM-01` returns day buckets within a month.
 7. Grid/search responses are intentionally lightweight and do not include heavy tag/face hydration.
@@ -365,8 +373,24 @@ The schema is defined in [backend/app/models.py](backend/app/models.py) and migr
 2. `EmbeddingService` delegates model execution through an embedding provider interface.
 3. `generate_for_asset()` stores the vector on `assets.search_vector` and records the model in `assets.search_model_id`.
 4. `GET /api/v1/search` embeds the text query with the current default CLIP model.
-5. Search returns active assets only, optionally filtered by person IDs.
+5. Search returns active assets only, optionally filtered by person IDs and tag IDs.
 6. Search now uses cursor pagination instead of offset pagination.
+
+### Hierarchical tags and albums
+
+1. Tags and albums share the `tags` table.
+2. Albums are tags with `is_album = true`.
+3. `slug` is generated from the user-facing name and used to build `path`.
+4. Parent/child relationships are derived from `path`, not a separate `parent_id` column.
+5. Asset membership is explicit-only:
+   - adding `holidays.china_2026` stores only that join
+   - parent matches are derived by descendant-aware queries
+6. Tag and album filters use descendant-aware AND semantics across multiple selected tags.
+7. Tag and album covers use `cover_asset_id` and must point to an asset that belongs to the tag directly or through a descendant.
+8. Deleting a branch defaults to `delete_children=false`:
+   - deleting a leaf succeeds immediately
+   - deleting a branch returns a conflict-style response suitable for frontend confirmation
+   - retrying with `delete_children=true` deletes the subtree
 
 ### Face detection
 
@@ -524,7 +548,7 @@ just db-shell
 
 ### Run the web app
 
-The current compose file does not start the Next.js frontend. Run it separately:
+The current compose file does not start the Next.js frontend. Run it separately. This frontend is currently for backend development/testing rather than the final product UI:
 
 ```bash
 cd web
@@ -627,6 +651,13 @@ curl -H "Authorization: Bearer $TOKEN" \
   "http://localhost:8000/api/v1/assets?month=2024-05-01&limit=100"
 ```
 
+List active assets matching a parent tag or album:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8000/api/v1/assets?tag_ids=<tag_id>"
+```
+
 List timeline month buckets:
 
 ```bash
@@ -689,6 +720,27 @@ curl -X POST -H "Authorization: Bearer $TOKEN" \
   http://localhost:8000/api/v1/trash/assets/<asset_id>/restore
 ```
 
+Create a hierarchical tag:
+
+```bash
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Holidays"}' \
+  http://localhost:8000/api/v1/tags/
+
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"China 2026","parent_id":<holidays_tag_id>}' \
+  http://localhost:8000/api/v1/tags/
+```
+
+Add a tag to one asset:
+
+```bash
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8000/api/v1/assets/<asset_id>/tags/<tag_id>
+```
+
 Bulk restore trashed assets:
 
 ```bash
@@ -728,7 +780,9 @@ Important route groups:
 | Area | Routes |
 | --- | --- |
 | Auth | `/api/v1/auth/register`, `/login`, `/refresh`, `/logout`, `/me` |
-| Assets | `/api/v1/assets/upload`, `/ingest`, `GET /api/v1/assets`, `GET/PATCH/DELETE /api/v1/assets/{asset_id}`, `GET /api/v1/assets/{asset_id}/preview` |
+| Assets | `/api/v1/assets/upload`, `/ingest`, `GET /api/v1/assets`, `GET/PATCH/DELETE /api/v1/assets/{asset_id}`, `POST/DELETE /api/v1/assets/{asset_id}/tags/{tag_id}`, `POST /api/v1/assets/tags:batch-add`, `POST /api/v1/assets/tags:batch-remove`, `GET /api/v1/assets/{asset_id}/preview` |
+| Tags | `GET/POST /api/v1/tags`, `GET/PATCH/DELETE /api/v1/tags/{tag_id}`, `GET /api/v1/tags/{tag_id}/assets` |
+| Albums | `GET/POST /api/v1/albums`, `GET/PATCH/DELETE /api/v1/albums/{album_id}`, `GET /api/v1/albums/{album_id}/assets` |
 | Timeline | `GET /api/v1/timeline/months`, `GET /api/v1/timeline/days` |
 | Search | `GET /api/v1/search` |
 | Faces | `POST /api/v1/assets/{asset_id}/faces/process`, `POST /api/v1/assets/{asset_id}/faces/match`, `GET /api/v1/assets/{asset_id}/faces`, `PATCH /api/v1/faces/{face_id}` |
@@ -791,6 +845,7 @@ Important route groups:
 - If video previews fail, check that `ffmpeg` and `ffprobe` are available in the container.
 - If InsightFace/OpenCLIP model downloads are slow or repeated, inspect `data/ai_cache`.
 - If a restore fails with conflict, the original source file is missing or the stored path is invalid.
+- If a tag or album delete returns conflict, retry only after confirming subtree deletion with `delete_children=true`.
 
 ## Current status
 
@@ -802,10 +857,13 @@ Important route groups:
   - face detection
   - incremental face matching
   - people clustering and naming
+  - hierarchical tags
+  - tag-backed albums
+  - single-item and batch asset tagging
+  - descendant-aware tag and album filtering
   - trash browse/restore
   - jobs and notifications
 - Not implemented in the current backend:
   - permanent delete
   - empty trash
-  - dedicated tag management endpoints
   - a wired mobile app
