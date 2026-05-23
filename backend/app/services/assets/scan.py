@@ -16,6 +16,7 @@ from app.services.jobs.queue import (
     enqueue_asset_embedding_batch_job,
     enqueue_asset_faces_batch_job,
 )
+from app.services.jobs.dispatcher import INTENT_AI
 from app.services.assets.media import (
     MEDIA_ORIGINALS_DIR,
     MEDIA_ORIGINALS_TMP_DIR,
@@ -207,10 +208,15 @@ async def _process_batch(batch: list[Path], job_id: UUID) -> ScanStats:
         embedding_queued = False
         face_queued = False
         if embedding_items:
-            embedding_queued = await enqueue_asset_embedding_batch_job(embedding_items)
+            embedding_queued = await enqueue_asset_embedding_batch_job(
+                embedding_items,
+                intent=INTENT_AI,
+            )
         if face_items:
             face_queued = await enqueue_asset_faces_batch_job(
-                face_items, auto_match=True
+                face_items,
+                auto_match=True,
+                intent=INTENT_AI,
             )
         if embedding_items and not embedding_queued:
             stats = stats.add(ScanStats(failed=len(embedding_items)))

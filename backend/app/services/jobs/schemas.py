@@ -10,6 +10,10 @@ from sqlmodel import Field, SQLModel
 class JobCreate(SQLModel):
     type: str
     job_key: str | None = None
+    queue_name: str | None = None
+    intent: str | None = None
+    dedup_key: str | None = None
+    params_hash: str | None = None
     parameters: dict[str, Any] | None = None
     progress_total: int | None = None
     parent_job_id: UUID | None = None
@@ -32,6 +36,10 @@ class JobRead(SQLModel):
     id: UUID
     type: str
     job_key: str | None = None
+    queue_name: str | None = None
+    intent: str | None = None
+    dedup_key: str | None = None
+    params_hash: str | None = None
     status: str
     progress_current: int
     progress_total: int | None = None

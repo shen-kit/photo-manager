@@ -23,6 +23,16 @@ from app.services.assets.scan import scan_originals_library
 from app.services.assets.storage_rules import StorageRulesService
 from app.services.embeddings.service import EmbeddingService
 from app.services.faces.service import FaceProcessingService
+from app.services.jobs.dispatcher import (
+    INTENT_BACKFILL,
+    PROCESS_ASSET_FACES_JOB_NAME,
+    PROCESS_ASSET_THUMBNAIL_BATCH_JOB_NAME,
+    clip_dedup_key,
+    faces_dedup_key,
+    params_hash,
+    queue_for_task,
+    thumbnail_batch_dedup_key,
+)
 from app.services.jobs.queue import (
     enqueue_asset_embedding_batch_job,
     enqueue_asset_faces_batch_job,
@@ -351,6 +361,13 @@ class RegenerateMissingAssetThumbnailsManualJobHandler(ManualJobHandler):
                 "process_asset_thumbnail_batch_item",
                 parameters={"asset_id": str(asset_id)},
                 job_key=parent_job.job_key,
+                queue_name=queue_for_task(
+                    job_name=PROCESS_ASSET_THUMBNAIL_BATCH_JOB_NAME,
+                    intent=INTENT_BACKFILL,
+                ),
+                intent=INTENT_BACKFILL,
+                dedup_key=thumbnail_batch_dedup_key(asset_ids=[str(asset_id)]),
+                params_hash=params_hash({"asset_id": str(asset_id)}),
                 parent_job_id=parent_job.id,
                 related_asset_id=asset_id,
                 is_visible=False,
@@ -369,7 +386,8 @@ class RegenerateMissingAssetThumbnailsManualJobHandler(ManualJobHandler):
                     for asset_id in asset_ids
                 ]
                 if child is not None
-            ]
+            ],
+            intent=INTENT_BACKFILL,
         )
         if not queued:
             for asset_id in asset_ids:
@@ -622,6 +640,13 @@ class RunMissingOrOutdatedClipEmbeddingsManualJobHandler(ManualJobHandler):
                 "generate_asset_clip_embedding",
                 parameters={"asset_id": str(asset_id), "force": force},
                 job_key=parent_job.job_key,
+                queue_name=queue_for_task(
+                    job_name="generate_asset_clip_embedding",
+                    intent=INTENT_BACKFILL,
+                ),
+                intent=INTENT_BACKFILL,
+                dedup_key=clip_dedup_key(asset_id, model_id=clip_model.id),
+                params_hash=params_hash({"asset_id": str(asset_id), "force": force}),
                 parent_job_id=parent_job.id,
                 related_asset_id=asset_id,
                 is_visible=False,
@@ -651,6 +676,7 @@ class RunMissingOrOutdatedClipEmbeddingsManualJobHandler(ManualJobHandler):
                 is not None
             ],
             force=force,
+            intent=INTENT_BACKFILL,
         )
         if not queued:
             for asset_id in asset_ids:
@@ -799,6 +825,23 @@ class RunMissingOrOutdatedFaceRecognitionManualJobHandler(ManualJobHandler):
                     "auto_match": auto_match,
                 },
                 job_key=parent_job.job_key,
+                queue_name=queue_for_task(
+                    job_name=PROCESS_ASSET_FACES_JOB_NAME,
+                    intent=INTENT_BACKFILL,
+                ),
+                intent=INTENT_BACKFILL,
+                dedup_key=faces_dedup_key(
+                    asset_id,
+                    model_id=face_model.id,
+                    auto_match=auto_match,
+                ),
+                params_hash=params_hash(
+                    {
+                        "asset_id": str(asset_id),
+                        "force": force,
+                        "auto_match": auto_match,
+                    }
+                ),
                 parent_job_id=parent_job.id,
                 related_asset_id=asset_id,
                 is_visible=False,
@@ -829,6 +872,7 @@ class RunMissingOrOutdatedFaceRecognitionManualJobHandler(ManualJobHandler):
             ],
             force=force,
             auto_match=auto_match,
+            intent=INTENT_BACKFILL,
         )
         if not queued:
             for asset_id in asset_ids:

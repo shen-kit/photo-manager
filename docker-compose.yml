@@ -79,10 +79,10 @@ services:
       - ./storage/originals:/media/originals
       - ./storage/processed:/media/processed
 
-  worker:
+  worker-fast:
     build:
       context: ./backend
-    container_name: photo-manager-worker
+    container_name: photo-manager-worker-fast
     restart: unless-stopped
     depends_on:
       db:
@@ -98,6 +98,52 @@ services:
       AI_CACHE_DIR: /cache/ai
       MEDIA_ORIGINALS_DIR: /media/originals
       MEDIA_PROCESSED_DIR: /media/processed
+      WORKER_QUEUES: interactive,metadata,preview
+      WORKER_MAX_JOBS: ${WORKER_FAST_MAX_JOBS:-2}
+      WORKER_TOTAL_CONCURRENCY: ${WORKER_FAST_TOTAL_CONCURRENCY:-2}
+      WORKER_PREVIEW_CONCURRENCY: ${WORKER_FAST_PREVIEW_CONCURRENCY:-1}
+      WORKER_VIDEO_PREVIEW_CONCURRENCY: ${WORKER_FAST_VIDEO_PREVIEW_CONCURRENCY:-1}
+      WORKER_CLIP_CONCURRENCY: 1
+      WORKER_FACES_CONCURRENCY: 1
+      WORKER_SCAN_CONCURRENCY: 1
+      WORKER_FACE_CLUSTERING_CONCURRENCY: 1
+      WORKER_MAINTENANCE_CONCURRENCY: 1
+    command: ["python", "-m", "worker"]
+    volumes:
+      - ./backend:/app
+      - ./data/ai_cache:/cache/ai
+      - ./storage/originals:/media/originals:ro
+      - ./storage/processed:/media/processed
+
+  worker-batch:
+    build:
+      context: ./backend
+    container_name: photo-manager-worker-batch
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - ./.env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-photo_manager}:${POSTGRES_PASSWORD:-photo_manager}@db:5432/${POSTGRES_DB:-photo_manager}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      REDIS_URL: redis://redis:6379/0
+      AI_CACHE_DIR: /cache/ai
+      MEDIA_ORIGINALS_DIR: /media/originals
+      MEDIA_PROCESSED_DIR: /media/processed
+      WORKER_QUEUES: ai,backfill,maintenance
+      WORKER_MAX_JOBS: ${WORKER_BATCH_MAX_JOBS:-1}
+      WORKER_TOTAL_CONCURRENCY: ${WORKER_BATCH_TOTAL_CONCURRENCY:-1}
+      WORKER_PREVIEW_CONCURRENCY: 1
+      WORKER_VIDEO_PREVIEW_CONCURRENCY: 1
+      WORKER_CLIP_CONCURRENCY: 1
+      WORKER_FACES_CONCURRENCY: 1
+      WORKER_SCAN_CONCURRENCY: 1
+      WORKER_FACE_CLUSTERING_CONCURRENCY: 1
+      WORKER_MAINTENANCE_CONCURRENCY: 1
     command: ["python", "-m", "worker"]
     volumes:
       - ./backend:/app

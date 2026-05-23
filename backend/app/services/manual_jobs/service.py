@@ -9,6 +9,11 @@ from sqlmodel import Session
 
 from app.core.database import get_session
 from app.models import Job
+from app.services.jobs.dispatcher import (
+    INTENT_BACKFILL,
+    INTENT_MAINTENANCE,
+    INTENT_METADATA,
+)
 from app.services.jobs.queue import (
     enqueue_manual_job_batch,
     enqueue_manual_job_run,
@@ -115,7 +120,11 @@ class ManualJobService:
             is_visible=True,
         )
         if handler.definition.execution_backend == "worker":
-            queued = await enqueue_manual_job_run(parent_job.id)
+            queued = await enqueue_manual_job_run(
+                parent_job.id,
+                job_key=parent_job.job_key,
+                intent=self._dispatch_intent(parent_job.job_key),
+            )
             if not queued:
                 self.job_service.fail_job(parent_job.id, "Failed to enqueue manual job")
                 raise HTTPException(
@@ -161,6 +170,7 @@ class ManualJobService:
                 parent_job.job_key,
                 prepared_run.payload,
                 batch_asset_ids,
+                intent=self._dispatch_intent(parent_job.job_key),
             )
             if not queued:
                 for asset_id in batch_asset_ids:
@@ -253,6 +263,19 @@ class ManualJobService:
     @staticmethod
     def _parent_job_type(job_key: str) -> str:
         return f"manual_job:{job_key}"
+
+    @staticmethod
+    def _dispatch_intent(job_key: str | None) -> str:
+        if job_key == "bulk_scan":
+            return INTENT_METADATA
+        if job_key in {
+            "run_missing_or_outdated_clip_embeddings",
+            "run_missing_or_outdated_face_recognition",
+            "regenerate_missing_asset_thumbnails",
+            "cluster_faces",
+        }:
+            return INTENT_BACKFILL
+        return INTENT_MAINTENANCE
 
 
 def get_manual_job_service(

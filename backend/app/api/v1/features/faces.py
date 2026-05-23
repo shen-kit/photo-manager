@@ -20,9 +20,15 @@ from app.services.faces.schemas import (
     FaceUpdateRequest,
 )
 from app.services.faces.service import FaceManagementService, FaceManagementServiceError
-from app.services.jobs.queue import enqueue_asset_faces_job
+from app.services.jobs.dispatcher import (
+    INTENT_INTERACTIVE,
+    JobDispatcher,
+    PROCESS_ASSET_FACES_JOB_NAME,
+    faces_dedup_key,
+)
+from app.services.ai_models.repository import AI_MODEL_TASK_FACE_RECOGNITION
+from app.services.jobs.queue import resolve_default_model_id
 from app.services.jobs.schemas import JobRead
-from app.services.jobs.service import JobService, get_job_service
 
 router = APIRouter()
 
@@ -63,32 +69,30 @@ async def process_asset_faces(
     force: bool = Query(default=False),
     auto_match: bool = Query(default=True),
     face_query_service: FaceQueryService = Depends(get_face_query_service),
-    job_service: JobService = Depends(get_job_service),
     current_user: User = Depends(get_current_user),
 ) -> JobRead:
     del current_user
     face_query_service.require_active_asset(asset_id)
-    job = job_service.create_job(
-        "process_asset_faces",
+    dispatch = await JobDispatcher(face_query_service.session).dispatch(
+        job_name=PROCESS_ASSET_FACES_JOB_NAME,
+        args=[str(asset_id), force, auto_match, None],
+        type=PROCESS_ASSET_FACES_JOB_NAME,
         parameters={
             "asset_id": str(asset_id),
             "force": force,
             "auto_match": auto_match,
         },
-    )
-    queued = await enqueue_asset_faces_job(
-        asset_id,
+        intent=INTENT_INTERACTIVE,
+        dedup_key=faces_dedup_key(
+            asset_id,
+            model_id=resolve_default_model_id(AI_MODEL_TASK_FACE_RECOGNITION),
+            auto_match=auto_match,
+        ),
+        related_asset_id=asset_id,
+        is_visible=True,
         force=force,
-        auto_match=auto_match,
-        job_id=job.id,
     )
-    if not queued:
-        job_service.fail_job(job.id, "Failed to enqueue asset face processing job")
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Failed to enqueue asset face processing job",
-        )
-    return JobRead.model_validate(job, from_attributes=True)
+    return JobRead.model_validate(dispatch.job, from_attributes=True)
 
 
 @router.post(

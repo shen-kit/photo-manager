@@ -34,7 +34,8 @@ Self-hosted photo and video management with a database-first design, cursor-base
 - `db`: PostgreSQL 16 with `pgvector`.
 - `redis`: ARQ queue backend.
 - `api`: FastAPI app.
-- `worker`: ARQ worker for metadata, batch thumbnail, preview, embedding, face, clustering, and scan jobs.
+- `worker-fast`: ARQ worker lanes for `interactive`, `metadata`, and `preview`.
+- `worker-batch`: ARQ worker lanes for `ai`, `backfill`, and `maintenance`.
 - `api` also runs an internal executor for API-owned maintenance jobs that must mutate `storage/originals/`.
 - `web`: Next.js app in `web/`, currently a development/testing frontend run separately from `docker-compose.yml`.
 
@@ -44,7 +45,8 @@ flowchart LR
   API[FastAPI API]
   DB[(PostgreSQL + pgvector + ltree)]
   Redis[(Redis)]
-  Worker[ARQ worker]
+  WorkerFast[ARQ worker-fast]
+  WorkerBatch[ARQ worker-batch]
   Originals[(storage/originals)]
   Processed[(storage/processed)]
   Cache[(data/ai_cache)]
@@ -54,11 +56,16 @@ flowchart LR
   API --> Redis
   API --> Originals
   API --> Processed
-  Worker --> DB
-  Worker --> Redis
-  Worker --> Originals
-  Worker --> Processed
-  Worker --> Cache
+  WorkerFast --> DB
+  WorkerFast --> Redis
+  WorkerFast --> Originals
+  WorkerFast --> Processed
+  WorkerFast --> Cache
+  WorkerBatch --> DB
+  WorkerBatch --> Redis
+  WorkerBatch --> Originals
+  WorkerBatch --> Processed
+  WorkerBatch --> Cache
 ```
 
 ### Tech stack
@@ -147,6 +154,7 @@ flowchart LR
 - Background worker entrypoints stay thin:
   - `backend/worker/tasks.py` delegates to service-level task functions
   - shared task/job lifecycle helpers live under `backend/app/services/jobs/`
+- Queue routing and semantic dedupe are centralized in `backend/app/services/jobs/dispatcher.py`.
 - API-owned maintenance execution is started from app lifespan and is used for jobs that must write to originals safely.
 - Model-runtime boundaries are explicit where they are likely to vary:
   - `backend/app/services/embeddings/provider.py` defines the embedding provider seam
@@ -175,7 +183,7 @@ The schema is defined in [backend/app/models.py](backend/app/models.py) and migr
 | `people` | Named or unnamed person clusters | `name`, `thumbnail_face_id`, `thumbnail_path`, `thumbnail_manually_set`, `is_hidden` |
 | `ai_models` | Registered AI model versions | `task`, `model_name`, `version_tag`, `vector_dimensions`, `is_deprecated` |
 | `ai_model_defaults` | Current default model per task | `task`, `model_id`, `updated_at` |
-| `jobs` | Background job tracking | `type`, `status`, `progress_*`, `parameters`, `result`, `error_message` |
+| `jobs` | Background job tracking | `type`, `job_key`, `queue_name`, `intent`, `dedup_key`, `params_hash`, `status`, `progress_*`, `parameters`, `result`, `error_message` |
 | `notifications` | User-visible system events | `level`, `category`, `title`, `message`, `details`, `related_job_id`, `related_asset_id`, `read_at` |
 | `tags` | Hierarchical tags and albums | `name`, `slug`, `path`, `is_album`, `description`, `cover_asset_id`, `created_at`, `updated_at` |
 | `asset_tags` | Asset-to-tag join table | `asset_id`, `tag_id` |
@@ -214,6 +222,10 @@ The schema is defined in [backend/app/models.py](backend/app/models.py) and migr
   - `path` is the unique hierarchical key used for descendant matching
   - only explicit asset-tag joins are stored in `asset_tags`
   - parent tag and album matches are derived at query time from descendant paths
+- Jobs:
+  - active dedupe is global by semantic `dedup_key`
+  - urgent interactive work may intentionally duplicate lower-priority queued work on a faster queue
+  - `force=true` bypasses dedupe checks
 
 ### Extensions and indexes
 
@@ -237,6 +249,8 @@ The schema is defined in [backend/app/models.py](backend/app/models.py) and migr
   - `idx_tags_path_gist`
   - `idx_tags_is_album`
   - `idx_tags_cover_asset_id`
+  - `idx_jobs_queue_name_status`
+  - `idx_jobs_dedup_key_status`
 
 ## Storage layout
 
@@ -282,6 +296,10 @@ The schema is defined in [backend/app/models.py](backend/app/models.py) and migr
 
 - Manual jobs are exposed through `/api/v1/jobs/available` and `/api/v1/jobs/<job_key>/run`.
 - Job parameters are declared by backend handler definitions and consumed by the frontend test launcher dynamically.
+- Worker-executed manual jobs are routed by intent:
+  - `bulk_scan` -> `metadata`
+  - CLIP / face / thumbnail backfills and clustering -> `backfill`
+  - maintenance-style jobs -> `maintenance`
 - `apply_storage_rules`:
   - defaults to `dry_run=true`
   - is executed by the API, not the worker
@@ -315,11 +333,11 @@ The schema is defined in [backend/app/models.py](backend/app/models.py) and migr
 ### Bulk scan
 
 1. `POST /api/v1/jobs/bulk_scan/run` creates a manual job.
-2. The worker walks `storage/originals/` recursively, excluding `.tmp`.
+2. `worker-batch` runs the scan conservatively while keeping faster queues free for user-triggered work.
 3. Supported files are hashed and deduplicated by `file_hash`.
 4. Each asset row is created or reused from metadata-first scan results.
 5. Tiny/small thumbnails are generated eagerly.
-6. CLIP and face work are queued in batches.
+6. CLIP and face work are queued in batches onto the `ai` queue.
 7. Notifications are written for scan start/completion/failures.
 
 ### Metadata processing
@@ -332,8 +350,8 @@ The schema is defined in [backend/app/models.py](backend/app/models.py) and migr
    - middle-frame preview for video-derived thumbnails
 4. Video width/height/codec/duration metadata is refreshed when needed.
 5. When metadata processing completes it can enqueue:
-   - CLIP embedding generation
-   - face processing for images
+   - CLIP embedding generation on `ai`
+   - face processing for images on `ai`
 6. Timeline browse fields are recomputed whenever metadata changes.
 
 ### Preview generation
@@ -345,10 +363,14 @@ The schema is defined in [backend/app/models.py](backend/app/models.py) and migr
    - videos serve `preview.mp4` when the generated preview exists
 3. If a required preview is missing:
    - the endpoint queues preview generation
+   - user-opened urgent requests route to `interactive`
+   - routine preview generation routes to `preview`
+   - full-library backfills route to `backfill`
    - the request returns `202 Accepted`
 4. Internal generation remains split:
    - image preview generation
    - video preview generation/transcoding
+5. Small images can still be satisfied inline without queueing when a generated large preview is unnecessary.
 
 ### Active browsing and timeline
 
@@ -484,6 +506,17 @@ Used after new face detection and after restore follow-up when current-model fac
 - Long-running operations write to `jobs`.
 - Queue-triggered flows also write user-facing `notifications`.
 - Shared worker lifecycle state transitions such as `running`, `failed`, `completed`, and manual parent-child completion hooks are centralized in `backend/app/services/jobs/context.py`.
+- Queue selection is intent-driven rather than hardcoded at call sites:
+  - `interactive`: urgent user-triggered preview and single-asset work
+  - `metadata`: upload/scan metadata extraction and lightweight thumbnails
+  - `preview`: routine large image/video preview generation
+  - `ai`: new-asset CLIP and face processing
+  - `backfill`: library-wide CLIP, face, thumbnail, preview, and clustering work
+  - `maintenance`: cleanup, reconciliation, diagnostics, and similar maintenance flows
+- Worker defaults are intentionally conservative for a low-power self-hosted machine:
+  - `worker-fast` handles `interactive`, `metadata`, `preview` with low concurrency
+  - `worker-batch` handles `ai`, `backfill`, `maintenance` with concurrency `1`
+  - per-job semaphores further serialize video preview, CLIP, face detection, face clustering, and scan work
 - Current job families include:
   - library scan
   - asset metadata processing
@@ -541,6 +574,8 @@ just up-d
 just down
 just ps
 just logs api
+just logs worker-fast
+just logs worker-batch
 just health
 just docs
 just db-shell
@@ -626,12 +661,23 @@ npm run lint
 npm run build
 ```
 
-Run the worker locally outside Docker if needed:
+Run a worker locally outside Docker if needed:
 
 ```bash
 cd backend
 python -m worker
 ```
+
+- Queue and concurrency selection is controlled by environment variables such as:
+  - `WORKER_QUEUES`
+  - `WORKER_MAX_JOBS`
+  - `WORKER_TOTAL_CONCURRENCY`
+  - `WORKER_PREVIEW_CONCURRENCY`
+  - `WORKER_VIDEO_PREVIEW_CONCURRENCY`
+  - `WORKER_CLIP_CONCURRENCY`
+  - `WORKER_FACES_CONCURRENCY`
+  - `WORKER_FACE_CLUSTERING_CONCURRENCY`
+  - `WORKER_SCAN_CONCURRENCY`
 
 ### Trigger common jobs
 
@@ -838,9 +884,9 @@ Important route groups:
 
 ### Troubleshooting notes
 
-- If face or CLIP jobs do not run, confirm:
+- If face, preview, or CLIP jobs do not run, confirm:
   - `redis` is healthy
-  - `worker` is running
+  - `worker-fast` and `worker-batch` are running
   - notifications/jobs show queued or failed state
 - If video previews fail, check that `ffmpeg` and `ffprobe` are available in the container.
 - If InsightFace/OpenCLIP model downloads are slow or repeated, inspect `data/ai_cache`.

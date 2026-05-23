@@ -224,6 +224,8 @@ class Job(SQLModel, table=True):
         Index("idx_jobs_status", "status"),
         Index("idx_jobs_type", "type"),
         Index("idx_jobs_job_key_status", "job_key", "status"),
+        Index("idx_jobs_queue_name_status", "queue_name", "status"),
+        Index("idx_jobs_dedup_key_status", "dedup_key", "status"),
         Index("idx_jobs_parent_job_id_created_at", "parent_job_id", desc("created_at")),
         Index("idx_jobs_related_asset_id", "related_asset_id"),
         Index(
@@ -244,6 +246,10 @@ class Job(SQLModel, table=True):
     )
     type: str = Field(sa_column=Column(Text, nullable=False))
     job_key: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
+    queue_name: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
+    intent: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
+    dedup_key: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
+    params_hash: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
     status: str = Field(sa_column=Column(Text, nullable=False))
     progress_current: int = Field(
         default=0, sa_column=Column(Integer, nullable=False, server_default="0")

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Literal
 from uuid import UUID
 
+from fastapi import HTTPException
 from sqlmodel import Session, select
 
 from app.models import Asset, Job
@@ -24,7 +25,13 @@ from app.services.assets.media import (
     write_video_preview,
 )
 from app.services.assets.urls import build_preview_url
-from app.services.jobs.queue import enqueue_asset_preview_job
+from app.services.jobs.dispatcher import (
+    GENERATE_ASSET_PREVIEW_JOB_NAME,
+    INTENT_INTERACTIVE,
+    INTENT_PREVIEW,
+    JobDispatcher,
+    preview_dedup_key,
+)
 from app.services.jobs.service import JobService
 
 logger = logging.getLogger(__name__)
@@ -267,31 +274,27 @@ class AssetPreviewService:
             if is_supported_video_mime_type(asset.mime_type)
             else IMAGE_PREVIEW_TASK
         )
-        active_job = self.job_service.find_active_job_for_asset(
-            job_key=PREVIEW_JOB_KEY,
-            related_asset_id=asset.id,
-        )
-        if active_job is not None:
-            return active_job
-        job = self.job_service.create_job(
-            PREVIEW_JOB_KEY,
-            parameters={"asset_id": str(asset.id), "priority": priority},
-            job_key=PREVIEW_JOB_KEY,
-            related_asset_id=asset.id,
-            is_visible=False,
-        )
-        queued = await enqueue_asset_preview_job(
-            asset.id,
-            job_id=job.id,
-            priority=priority,
-        )
-        if not queued:
-            self.job_service.fail_job(job.id, "Failed to enqueue preview job")
+        try:
+            dispatch = await JobDispatcher(self.session).dispatch(
+                job_name=GENERATE_ASSET_PREVIEW_JOB_NAME,
+                args=[str(asset.id), None, priority],
+                type=PREVIEW_JOB_KEY,
+                parameters={"asset_id": str(asset.id), "priority": priority},
+                job_key=PREVIEW_JOB_KEY,
+                intent=INTENT_INTERACTIVE if priority == "high" else INTENT_PREVIEW,
+                dedup_key=preview_dedup_key(asset.id),
+                related_asset_id=asset.id,
+                is_visible=False,
+                force=False,
+                allow_active_duplicate=priority == "high",
+            )
+            job = dispatch.job
+        except HTTPException:
             self.tracker.mark_failed(
                 asset_id=asset.id,
                 ai_model_id=None,
                 task=task,
-                job_id=job.id,
+                job_id=None,
                 error_message="Failed to enqueue preview job",
             )
             return None

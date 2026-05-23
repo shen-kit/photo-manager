@@ -25,6 +25,10 @@ class JobService:
         progress_total: int | None = None,
         *,
         job_key: str | None = None,
+        queue_name: str | None = None,
+        intent: str | None = None,
+        dedup_key: str | None = None,
+        params_hash: str | None = None,
         parent_job_id: UUID | None = None,
         related_asset_id: UUID | None = None,
         is_visible: bool = True,
@@ -32,6 +36,10 @@ class JobService:
         job = Job(
             type=type,
             job_key=job_key,
+            queue_name=queue_name,
+            intent=intent,
+            dedup_key=dedup_key,
+            params_hash=params_hash,
             status="queued",
             parameters=parameters,
             progress_total=progress_total,
@@ -144,6 +152,21 @@ class JobService:
             .where(
                 Job.job_key == job_key,
                 Job.related_asset_id == related_asset_id,
+                Job.status.in_(ACTIVE_JOB_STATUSES),
+            )
+            .order_by(Job.created_at.desc())
+        )
+        return self.session.exec(statement).first()
+
+    def find_active_job_by_dedup_key(
+        self,
+        *,
+        dedup_key: str,
+    ) -> Job | None:
+        statement = (
+            select(Job)
+            .where(
+                Job.dedup_key == dedup_key,
                 Job.status.in_(ACTIVE_JOB_STATUSES),
             )
             .order_by(Job.created_at.desc())
