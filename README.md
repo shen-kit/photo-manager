@@ -126,6 +126,7 @@ flowchart LR
 │   └── redis/                     # Redis appendonly data
 ├── docker-compose.yml
 ├── Justfile
+├── openspec/                      # change proposals, designs, tasks, specs
 └── README.md
 ```
 
