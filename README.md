@@ -1,6 +1,6 @@
 # Photo Manager
 
-Self-hosted photo and video management with a database-first design, cursor-based browsing, timeline navigation, hierarchical tags and albums, derived previews, semantic search, face recognition, people management, and soft-delete trash flows.
+Self-hosted photo and video management with a database-first design, cursor-based browsing, timeline navigation, hierarchical tags and albums, derived previews, semantic search, face recognition, people management, integrity diagnostics with repair flows, and soft-delete trash flows.
 
 ## Overview
 
@@ -24,6 +24,7 @@ Self-hosted photo and video management with a database-first design, cursor-base
   - Incremental face matching for newly processed and restored assets.
   - Bulk clustering for remaining unassigned faces.
   - People naming, hiding, merging, thumbnail selection, and person filtering.
+  - Cached system integrity diagnostics with persisted findings and snapshot-scoped repairs.
   - Soft delete, trash listing, and restore.
   - Background jobs and in-app notifications.
 
@@ -144,6 +145,7 @@ flowchart LR
 - Routes live under `backend/app/api/v1/features/`.
 - Domain logic lives under `backend/app/services/`.
 - Manual maintenance jobs use handler classes under `backend/app/services/manual_jobs/`.
+- System integrity diagnostics and repairs live under `backend/app/services/system_integrity/`.
 - Some manual jobs are worker-executed, while filesystem-mutating jobs such as storage rules are API-executed.
 - Generic processing state tracking lives under `backend/app/services/asset_processing/`.
 - Repositories are used for persistence-heavy operations such as:
@@ -155,6 +157,7 @@ flowchart LR
   - `backend/worker/tasks.py` delegates to service-level task functions
   - shared task/job lifecycle helpers live under `backend/app/services/jobs/`
 - Queue routing and semantic dedupe are centralized in `backend/app/services/jobs/dispatcher.py`.
+- Integrity diagnostics run through the same dispatcher and worker stack with `diagnostic:` job keys.
 - API-owned maintenance execution is started from app lifespan and is used for jobs that must write to originals safely.
 - Model-runtime boundaries are explicit where they are likely to vary:
   - `backend/app/services/embeddings/provider.py` defines the embedding provider seam
@@ -184,6 +187,8 @@ The schema is defined in [backend/app/models.py](backend/app/models.py) and migr
 | `ai_models` | Registered AI model versions | `task`, `model_name`, `version_tag`, `vector_dimensions`, `is_deprecated` |
 | `ai_model_defaults` | Current default model per task | `task`, `model_id`, `updated_at` |
 | `jobs` | Background job tracking | `type`, `job_key`, `queue_name`, `intent`, `dedup_key`, `params_hash`, `status`, `progress_*`, `parameters`, `result`, `error_message` |
+| `diagnostic_runs` | Persisted integrity snapshot runs | `diagnostic_key`, `status`, `health_state`, `summary_json`, `sample_items_json`, `repair_job_key`, `related_job_id`, `latest_repair_job_id`, `checked_at` |
+| `diagnostic_run_items` | Per-item integrity findings for paging and repair scope | `diagnostic_run_id`, `asset_id`, `person_id`, `relative_path`, `item_type`, `reason_code`, `repairable`, `detail_json` |
 | `notifications` | User-visible system events | `level`, `category`, `title`, `message`, `details`, `related_job_id`, `related_asset_id`, `read_at` |
 | `tags` | Hierarchical tags and albums | `name`, `slug`, `path`, `is_album`, `description`, `cover_asset_id`, `created_at`, `updated_at` |
 | `asset_tags` | Asset-to-tag join table | `asset_id`, `tag_id` |
@@ -226,6 +231,11 @@ The schema is defined in [backend/app/models.py](backend/app/models.py) and migr
   - active dedupe is global by semantic `dedup_key`
   - urgent interactive work may intentionally duplicate lower-priority queued work on a faster queue
   - `force=true` bypasses dedupe checks
+- System integrity diagnostics:
+  - runs are explicit and cached rather than always live
+  - findings are stored in `diagnostic_run_items` for paging, auditing, and repair reuse
+  - only the newest three runs per diagnostic are retained
+  - repairs consume the persisted snapshot scope and revalidate each item before mutation
 
 ### Extensions and indexes
 
@@ -251,6 +261,8 @@ The schema is defined in [backend/app/models.py](backend/app/models.py) and migr
   - `idx_tags_cover_asset_id`
   - `idx_jobs_queue_name_status`
   - `idx_jobs_dedup_key_status`
+  - `idx_diagnostic_runs_key_checked_at`
+  - `idx_diagnostic_run_items_run_id_id`
 
 ## Storage layout
 

@@ -25,6 +25,12 @@ from app.services.assets.jobs import (
     process_asset_thumbnail_batch as process_asset_thumbnail_batch_job,
 )
 from app.services.manual_jobs.service import ManualJobService
+from app.services.system_integrity.tasks import (
+    run_system_integrity_diagnostic as run_system_integrity_diagnostic_job,
+)
+from app.services.system_integrity.tasks import (
+    run_system_integrity_repair as run_system_integrity_repair_job,
+)
 from app.core.database import engine
 from app.models import Asset, Job
 from app.services.assets.media import is_supported_video_mime_type
@@ -224,3 +230,25 @@ async def schedule_manual_job_batch(
                 asset_ids=[UUID(asset_id) for asset_id in asset_ids],
             ),
         )
+
+
+async def run_system_integrity_diagnostic(
+    ctx: dict[str, object],
+    run_id: str,
+) -> None:
+    await _run_limited(
+        ctx,
+        limit_keys=("worker_semaphore", "maintenance_semaphore"),
+        awaitable=run_system_integrity_diagnostic_job(ctx, run_id),
+    )
+
+
+async def run_system_integrity_repair(
+    ctx: dict[str, object],
+    diagnostic_run_id: str,
+) -> None:
+    await _run_limited(
+        ctx,
+        limit_keys=("worker_semaphore", "maintenance_semaphore"),
+        awaitable=run_system_integrity_repair_job(ctx, diagnostic_run_id),
+    )

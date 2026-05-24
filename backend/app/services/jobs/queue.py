@@ -25,9 +25,13 @@ from app.services.jobs.dispatcher import (
     PROCESS_ASSET_FACES_JOB_NAME,
     PROCESS_ASSET_METADATA_JOB_NAME,
     PROCESS_ASSET_THUMBNAIL_BATCH_JOB_NAME,
+    RUN_SYSTEM_INTEGRITY_DIAGNOSTIC_JOB_NAME,
+    RUN_SYSTEM_INTEGRITY_REPAIR_JOB_NAME,
     RUN_MANUAL_JOB_NAME,
     SCHEDULE_MANUAL_JOB_BATCH_NAME,
     clip_dedup_key,
+    diagnostic_repair_dedup_key,
+    diagnostic_run_dedup_key,
     dispatch_with_new_session,
     embedding_batch_dedup_key,
     faces_batch_dedup_key,
@@ -252,6 +256,53 @@ async def enqueue_manual_job_run(
         parameters={"job_id": str(job_id), "job_key": job_key},
         intent=intent,
         dedup_key=manual_run_dedup_key(job_id, job_key=job_key),
+        is_visible=True,
+        force=False,
+        existing_job_id=job_id,
+    )
+    return _dispatch_succeeded(result.job.status)
+
+
+async def enqueue_system_integrity_diagnostic_run(
+    *,
+    diagnostic_key: str,
+    run_id: UUID,
+    job_id: UUID | None = None,
+    intent: str = INTENT_MAINTENANCE,
+) -> bool:
+    result = await dispatch_with_new_session(
+        job_name=RUN_SYSTEM_INTEGRITY_DIAGNOSTIC_JOB_NAME,
+        args=[str(run_id)],
+        type=RUN_SYSTEM_INTEGRITY_DIAGNOSTIC_JOB_NAME,
+        parameters={"run_id": str(run_id), "diagnostic_key": diagnostic_key},
+        intent=intent,
+        dedup_key=diagnostic_run_dedup_key(diagnostic_key),
+        job_key=f"diagnostic:{diagnostic_key}",
+        is_visible=True,
+        force=False,
+        existing_job_id=job_id,
+    )
+    return _dispatch_succeeded(result.job.status)
+
+
+async def enqueue_system_integrity_repair_run(
+    *,
+    diagnostic_run_id: UUID,
+    repair_job_key: str,
+    job_id: UUID | None = None,
+    intent: str = INTENT_MAINTENANCE,
+) -> bool:
+    result = await dispatch_with_new_session(
+        job_name=RUN_SYSTEM_INTEGRITY_REPAIR_JOB_NAME,
+        args=[str(diagnostic_run_id)],
+        type=RUN_SYSTEM_INTEGRITY_REPAIR_JOB_NAME,
+        parameters={
+            "diagnostic_run_id": str(diagnostic_run_id),
+            "repair_job_key": repair_job_key,
+        },
+        intent=intent,
+        dedup_key=diagnostic_repair_dedup_key(diagnostic_run_id),
+        job_key=f"diagnostic:repair:{repair_job_key}",
         is_visible=True,
         force=False,
         existing_job_id=job_id,

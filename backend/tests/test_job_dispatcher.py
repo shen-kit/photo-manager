@@ -28,6 +28,8 @@ from app.services.jobs.dispatcher import (
     INTENT_INTERACTIVE,
     INTENT_MAINTENANCE,
     INTENT_METADATA,
+    RUN_SYSTEM_INTEGRITY_DIAGNOSTIC_JOB_NAME,
+    RUN_SYSTEM_INTEGRITY_REPAIR_JOB_NAME,
     JobDispatcher,
     clip_dedup_key,
     faces_dedup_key,
@@ -138,6 +140,20 @@ class JobDispatcherTest(unittest.TestCase):
                 intent=INTENT_METADATA,
             ),
             "metadata",
+        )
+        self.assertEqual(
+            queue_for_task(
+                job_name=RUN_SYSTEM_INTEGRITY_DIAGNOSTIC_JOB_NAME,
+                intent=INTENT_MAINTENANCE,
+            ),
+            "maintenance",
+        )
+        self.assertEqual(
+            queue_for_task(
+                job_name=RUN_SYSTEM_INTEGRITY_REPAIR_JOB_NAME,
+                intent=INTENT_MAINTENANCE,
+            ),
+            "maintenance",
         )
 
     def test_dedup_keys_include_asset_and_model_scope(self) -> None:

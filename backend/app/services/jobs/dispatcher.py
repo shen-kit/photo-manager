@@ -42,6 +42,8 @@ GENERATE_ASSET_CLIP_EMBEDDING_BATCH_JOB_NAME = "generate_asset_clip_embedding_ba
 PROCESS_ASSET_FACES_BATCH_JOB_NAME = "process_asset_faces_batch"
 RUN_MANUAL_JOB_NAME = "run_manual_job"
 SCHEDULE_MANUAL_JOB_BATCH_NAME = "schedule_manual_job_batch"
+RUN_SYSTEM_INTEGRITY_DIAGNOSTIC_JOB_NAME = "run_system_integrity_diagnostic"
+RUN_SYSTEM_INTEGRITY_REPAIR_JOB_NAME = "run_system_integrity_repair"
 
 
 def redis_queue_name(queue_name: str) -> str:
@@ -140,6 +142,14 @@ def manual_batch_dedup_key(
     )
 
 
+def diagnostic_run_dedup_key(diagnostic_key: str) -> str:
+    return f"diagnostic-run:{diagnostic_key}"
+
+
+def diagnostic_repair_dedup_key(diagnostic_run_id: UUID) -> str:
+    return f"diagnostic-repair:{diagnostic_run_id}"
+
+
 def queue_for_task(*, job_name: str, intent: str) -> str:
     if job_name == GENERATE_ASSET_PREVIEW_JOB_NAME:
         if intent == INTENT_INTERACTIVE:
@@ -162,7 +172,12 @@ def queue_for_task(*, job_name: str, intent: str) -> str:
         if job_name == PROCESS_ASSET_THUMBNAIL_BATCH_JOB_NAME:
             return QUEUE_METADATA if intent == INTENT_METADATA else QUEUE_BACKFILL
         return QUEUE_BACKFILL if intent == INTENT_BACKFILL else QUEUE_AI
-    if job_name in {RUN_MANUAL_JOB_NAME, SCHEDULE_MANUAL_JOB_BATCH_NAME}:
+    if job_name in {
+        RUN_MANUAL_JOB_NAME,
+        SCHEDULE_MANUAL_JOB_BATCH_NAME,
+        RUN_SYSTEM_INTEGRITY_DIAGNOSTIC_JOB_NAME,
+        RUN_SYSTEM_INTEGRITY_REPAIR_JOB_NAME,
+    }:
         if intent == INTENT_BACKFILL:
             return QUEUE_BACKFILL
         return QUEUE_MAINTENANCE if intent == INTENT_MAINTENANCE else QUEUE_METADATA

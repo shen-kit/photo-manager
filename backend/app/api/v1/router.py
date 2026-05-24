@@ -8,6 +8,7 @@ from app.api.v1.features.jobs import router as jobs_router
 from app.api.v1.features.notifications import router as notifications_router
 from app.api.v1.features.people import router as people_router
 from app.api.v1.features.search import router as search_router
+from app.api.v1.features.system_integrity import router as system_integrity_router
 from app.api.v1.features.tags import router as tags_router
 from app.api.v1.features.timeline import router as timeline_router
 from app.api.v1.features.trash import router as trash_router
@@ -24,6 +25,10 @@ api_v1_router.include_router(
 )
 api_v1_router.include_router(people_router, tags=["people"])
 api_v1_router.include_router(search_router, prefix="/search", tags=["search"])
+api_v1_router.include_router(
+    system_integrity_router,
+    tags=["system-integrity"],
+)
 api_v1_router.include_router(tags_router, prefix="/tags", tags=["tags"])
 api_v1_router.include_router(timeline_router, tags=["timeline"])
 api_v1_router.include_router(trash_router, prefix="/trash", tags=["trash"])

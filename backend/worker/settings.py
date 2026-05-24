@@ -23,6 +23,8 @@ from .tasks import (
     process_asset_metadata,
     process_asset_thumbnail_batch,
     run_manual_job,
+    run_system_integrity_diagnostic,
+    run_system_integrity_repair,
     schedule_manual_job_batch,
 )
 
@@ -38,6 +40,8 @@ WORKER_FUNCTIONS = [
     process_asset_faces_batch,
     process_asset_thumbnail_batch,
     run_manual_job,
+    run_system_integrity_diagnostic,
+    run_system_integrity_repair,
     schedule_manual_job_batch,
 ]
 
