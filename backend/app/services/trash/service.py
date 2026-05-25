@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import shutil
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, status
+from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session
 
 from app.core.database import get_session
@@ -16,6 +18,7 @@ from app.services.ai_models.repository import (
     AIModelRepository,
 )
 from app.services.assets.media import (
+    MEDIA_PROCESSED_DIR,
     is_supported_image_mime_type,
     master_path_to_source_path,
     processed_asset_dir,
@@ -51,6 +54,17 @@ class TrashRestoreResult:
     tags: list[dict[str, object]] | None
     faces: list[dict[str, object]] | None
     jobs: TrashRestoreJobResult
+
+
+@dataclass(frozen=True)
+class TrashDeleteResult:
+    asset_id: UUID
+
+
+@dataclass(frozen=True)
+class TrashDeleteSummary:
+    deleted: list[TrashDeleteResult]
+    failures: list[tuple[UUID, str]]
 
 
 class TrashService:
@@ -127,14 +141,7 @@ class TrashService:
         self,
         asset_ids: list[UUID],
     ) -> tuple[list[TrashRestoreResult], list[tuple[UUID, str]]]:
-        unique_asset_ids: list[UUID] = []
-        seen: set[UUID] = set()
-        for asset_id in asset_ids:
-            if asset_id in seen:
-                continue
-            seen.add(asset_id)
-            unique_asset_ids.append(asset_id)
-
+        unique_asset_ids = self._dedupe_asset_ids(asset_ids)
         if not unique_asset_ids:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -149,6 +156,65 @@ class TrashService:
             except HTTPException as exc:
                 failures.append((asset_id, str(exc.detail)))
         return restored, failures
+
+    def permanently_delete_asset(self, asset_id: UUID) -> TrashDeleteResult:
+        asset = self.asset_repository.get_deleted_asset(asset_id)
+        if asset is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Asset not found in trash",
+            )
+
+        self._delete_asset_files(asset)
+        try:
+            self.asset_repository.delete_asset_record(asset)
+        except SQLAlchemyError as exc:
+            self.session.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to delete asset record",
+            ) from exc
+        return TrashDeleteResult(asset_id=asset_id)
+
+    def permanently_delete_assets(self, asset_ids: list[UUID]) -> TrashDeleteSummary:
+        unique_asset_ids = self._dedupe_asset_ids(asset_ids)
+        if not unique_asset_ids:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="asset_ids must not be empty",
+            )
+
+        deleted: list[TrashDeleteResult] = []
+        failures: list[tuple[UUID, str]] = []
+        for asset_id in unique_asset_ids:
+            try:
+                deleted.append(self.permanently_delete_asset(asset_id))
+            except HTTPException as exc:
+                failures.append((asset_id, str(exc.detail)))
+        return TrashDeleteSummary(deleted=deleted, failures=failures)
+
+    def empty_trash(self) -> TrashDeleteSummary:
+        deleted_assets = self.asset_repository.list_all_deleted_assets()
+        if not deleted_assets:
+            return TrashDeleteSummary(deleted=[], failures=[])
+
+        deleted: list[TrashDeleteResult] = []
+        failures: list[tuple[UUID, str]] = []
+        for asset in deleted_assets:
+            try:
+                self._delete_asset_files(asset)
+                try:
+                    self.asset_repository.delete_asset_record(asset)
+                except SQLAlchemyError as exc:
+                    self.session.rollback()
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail="Failed to delete asset record",
+                    ) from exc
+                deleted.append(TrashDeleteResult(asset_id=asset.id))
+            except HTTPException as exc:
+                failures.append((asset.id, str(exc.detail)))
+        return TrashDeleteSummary(deleted=deleted, failures=failures)
 
     def _require_restore_source(self, asset: Asset) -> Path:
         try:
@@ -236,6 +302,45 @@ class TrashService:
         if not (asset_dir / "small.webp").is_file():
             return True
         return False
+
+    @staticmethod
+    def _dedupe_asset_ids(asset_ids: list[UUID]) -> list[UUID]:
+        unique_asset_ids: list[UUID] = []
+        seen: set[UUID] = set()
+        for asset_id in asset_ids:
+            if asset_id in seen:
+                continue
+            seen.add(asset_id)
+            unique_asset_ids.append(asset_id)
+        return unique_asset_ids
+
+    def _delete_asset_files(self, asset: Asset) -> None:
+        source_path = self._resolve_purge_source_path(asset)
+        if source_path.exists():
+            source_path.unlink(missing_ok=True)
+        asset_dir = self._resolve_purge_processed_dir(asset)
+        if asset_dir.exists():
+            shutil.rmtree(asset_dir)
+
+    def _resolve_purge_source_path(self, asset: Asset) -> Path:
+        try:
+            return master_path_to_source_path(asset.master_path)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Deleted asset source path is invalid",
+            ) from exc
+
+    def _resolve_purge_processed_dir(self, asset: Asset) -> Path:
+        asset_dir = processed_asset_dir(asset.id).resolve()
+        try:
+            asset_dir.relative_to(MEDIA_PROCESSED_DIR)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Deleted asset processed path is invalid",
+            ) from exc
+        return asset_dir
 
 
 def get_trash_service(session: Session = Depends(get_session)) -> TrashService:

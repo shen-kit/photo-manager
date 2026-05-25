@@ -136,3 +136,25 @@ class TrashBulkRestoreResponse(SQLModel):
     failed: int
     items: list[TrashRestoreResponse] = Field(default_factory=list)
     failures: list[TrashRestoreFailure] = Field(default_factory=list)
+
+
+class TrashBulkDeleteRequest(SQLModel):
+    asset_ids: list[UUID]
+
+
+class TrashDeleteFailure(SQLModel):
+    asset_id: UUID
+    detail: str
+
+
+class TrashDeleteSummaryResponse(SQLModel):
+    requested: int
+    deleted: int
+    failed: int
+    failures: list[TrashDeleteFailure] = Field(default_factory=list)
+
+
+class TrashEmptyResponse(SQLModel):
+    deleted: int
+    failed: int
+    failures: list[TrashDeleteFailure] = Field(default_factory=list)

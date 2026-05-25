@@ -37,6 +37,24 @@ class AssetRepository:
         statement = select(Asset).where(Asset.id == asset_id, deleted_asset_where())
         return self.session.exec(statement).first()
 
+    def list_deleted_assets_by_ids(self, asset_ids: list[UUID]) -> list[Asset]:
+        if not asset_ids:
+            return []
+        statement = (
+            select(Asset)
+            .where(Asset.id.in_(asset_ids), deleted_asset_where())
+            .order_by(Asset.created_at.asc(), Asset.id.asc())
+        )
+        return list(self.session.exec(statement).all())
+
+    def list_all_deleted_assets(self) -> list[Asset]:
+        statement = (
+            select(Asset)
+            .where(deleted_asset_where())
+            .order_by(Asset.created_at.asc(), Asset.id.asc())
+        )
+        return list(self.session.exec(statement).all())
+
     def get_active_asset_detail(
         self, asset_id: UUID
     ) -> tuple[Asset, list[dict[str, Any]] | None, list[dict[str, Any]] | None] | None:
@@ -99,6 +117,10 @@ class AssetRepository:
         self.session.commit()
         self.session.refresh(asset)
         return asset
+
+    def delete_asset_record(self, asset: Asset) -> None:
+        self.session.delete(asset)
+        self.session.commit()
 
     def list_person_ids_for_asset(self, *, asset_id: UUID) -> list[UUID]:
         statement = select(func.distinct(Face.person_id)).where(

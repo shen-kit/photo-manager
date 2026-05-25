@@ -1,6 +1,6 @@
 # Photo Manager
 
-Self-hosted photo and video management with a database-first design, cursor-based browsing, timeline navigation, hierarchical tags and albums, derived previews, semantic search, face recognition, people management, integrity diagnostics with repair flows, and soft-delete trash flows.
+Self-hosted photo and video management with a database-first design, cursor-based browsing, timeline navigation, hierarchical tags and albums, derived previews, semantic search, face recognition, people management, integrity diagnostics with repair flows, and trash flows for soft delete, restore, and permanent purge.
 
 ## Overview
 
@@ -25,7 +25,7 @@ Self-hosted photo and video management with a database-first design, cursor-base
   - Bulk clustering for remaining unassigned faces.
   - People naming, hiding, merging, thumbnail selection, and person filtering.
   - Cached system integrity diagnostics with persisted findings and snapshot-scoped repairs.
-  - Soft delete, trash listing, and restore.
+  - Soft delete, trash listing, restore, permanent delete, and empty trash.
   - Background jobs and in-app notifications.
 
 ## Architecture
@@ -101,7 +101,8 @@ flowchart LR
 ### Security and privacy decisions
 
 - The app is intended for self-hosted/private deployment.
-- Originals are never physically deleted by the API delete flow.
+- Normal asset delete is soft-delete only and does not physically remove originals.
+- Permanent deletion is restricted to trash-only purge endpoints and deletes only paths resolved inside configured media roots.
 - Soft delete uses `assets.deleted_at`; active queries exclude deleted assets unless a trash route is used.
 - Access tokens are bearer JWTs; refresh tokens are stored as hashed DB records and rotated via an `HttpOnly` cookie on `/api/v1/auth`.
 - Face and CLIP embeddings are stored in the database, but normal API response schemas do not expose embedding vectors.
@@ -513,6 +514,20 @@ Used after new face detection and after restore follow-up when current-model fac
    - otherwise enqueue face detection with `auto_match=true`
 6. Deleted people are not recreated automatically; restored faces remain unassigned unless current matching can reattach them confidently.
 
+#### Permanent delete
+
+1. `DELETE /api/v1/trash/assets/{asset_id}` only targets assets whose `deleted_at IS NOT NULL`.
+2. `POST /api/v1/trash/assets/delete` permanently deletes selected trashed assets and returns partial-failure details per asset.
+3. `DELETE /api/v1/trash/assets` empties trash by purging all currently trashed assets.
+4. Purge deletes:
+   - original media file if its stored relative path resolves inside the originals root
+   - generated processed asset directory under `storage/processed/assets/<asset_id>`
+   - asset database row, letting existing FK rules cascade dependent rows
+5. Missing original or processed files are treated as already absent and do not block purge.
+6. Invalid escaped paths fail safe:
+   - purge for that asset is rejected
+   - database row remains so the issue can be retried or repaired
+
 ### Jobs and notifications
 
 - Long-running operations write to `jobs`.
@@ -778,6 +793,13 @@ curl -X POST -H "Authorization: Bearer $TOKEN" \
   http://localhost:8000/api/v1/trash/assets/<asset_id>/restore
 ```
 
+Permanently delete one trashed asset:
+
+```bash
+curl -X DELETE -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8000/api/v1/trash/assets/<asset_id>
+```
+
 Create a hierarchical tag:
 
 ```bash
@@ -806,6 +828,22 @@ curl -X POST -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"asset_ids":["<uuid-1>","<uuid-2>"]}' \
   http://localhost:8000/api/v1/trash/assets/restore
+```
+
+Bulk permanently delete trashed assets:
+
+```bash
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"asset_ids":["<uuid-1>","<uuid-2>"]}' \
+  http://localhost:8000/api/v1/trash/assets/delete
+```
+
+Empty trash:
+
+```bash
+curl -X DELETE -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8000/api/v1/trash/assets
 ```
 
 ### Reset local state
@@ -845,7 +883,7 @@ Important route groups:
 | Search | `GET /api/v1/search` |
 | Faces | `POST /api/v1/assets/{asset_id}/faces/process`, `POST /api/v1/assets/{asset_id}/faces/match`, `GET /api/v1/assets/{asset_id}/faces`, `PATCH /api/v1/faces/{face_id}` |
 | People | `GET /api/v1/people`, `GET/PATCH /api/v1/people/{person_id}`, `PATCH /api/v1/people/{person_id}/thumbnail`, `POST /api/v1/people/{source_person_id}/merge-into/{target_person_id}` |
-| Trash | `GET /api/v1/trash/assets`, `GET /api/v1/trash/assets/{asset_id}`, `POST /api/v1/trash/assets/{asset_id}/restore`, `POST /api/v1/trash/assets/restore` |
+| Trash | `GET /api/v1/trash/assets`, `GET /api/v1/trash/assets/{asset_id}`, `POST /api/v1/trash/assets/{asset_id}/restore`, `POST /api/v1/trash/assets/restore`, `DELETE /api/v1/trash/assets/{asset_id}`, `POST /api/v1/trash/assets/delete`, `DELETE /api/v1/trash/assets` |
 | Jobs | `GET /api/v1/jobs/available`, `POST /api/v1/jobs/{job_key}/run`, `GET /api/v1/jobs`, `GET /api/v1/jobs/{job_id}` |
 | Notifications | `GET /api/v1/notifications`, `POST /api/v1/notifications/{notification_id}/read`, `POST /api/v1/notifications/read-all`, `DELETE /api/v1/notifications/{notification_id}`, `DELETE /api/v1/notifications` |
 
@@ -903,6 +941,7 @@ Important route groups:
 - If video previews fail, check that `ffmpeg` and `ffprobe` are available in the container.
 - If InsightFace/OpenCLIP model downloads are slow or repeated, inspect `data/ai_cache`.
 - If a restore fails with conflict, the original source file is missing or the stored path is invalid.
+- If a permanent delete fails with conflict, the stored path is invalid or resolves outside the configured media roots.
 - If a tag or album delete returns conflict, retry only after confirming subtree deletion with `delete_children=true`.
 
 ## Current status
@@ -920,8 +959,8 @@ Important route groups:
   - single-item and batch asset tagging
   - descendant-aware tag and album filtering
   - trash browse/restore
-  - jobs and notifications
-- Not implemented in the current backend:
   - permanent delete
   - empty trash
+  - jobs and notifications
+- Not implemented in the current backend:
   - a wired mobile app

@@ -8,14 +8,22 @@ from uuid import uuid4
 from starlette.requests import Request
 
 from app.api.v1.features.trash import (
+    empty_trash,
     get_deleted_asset,
     list_deleted_assets,
+    permanently_delete_asset,
+    permanently_delete_assets,
     restore_deleted_asset,
     restore_deleted_assets,
 )
 from app.models import Asset, User
-from app.services.trash.schemas import TrashBulkRestoreRequest
-from app.services.trash.service import TrashRestoreJobResult, TrashRestoreResult
+from app.services.trash.schemas import TrashBulkDeleteRequest, TrashBulkRestoreRequest
+from app.services.trash.service import (
+    TrashDeleteResult,
+    TrashDeleteSummary,
+    TrashRestoreJobResult,
+    TrashRestoreResult,
+)
 
 
 class _FakeTrashService:
@@ -24,10 +32,14 @@ class _FakeTrashService:
         self.detail_calls: list[str] = []
         self.restore_calls: list[str] = []
         self.bulk_calls: list[list[str]] = []
+        self.delete_calls: list[str] = []
+        self.bulk_delete_calls: list[list[str]] = []
+        self.empty_calls = 0
         self.deleted_rows = []
         self.detail_row = None
         self.restore_result = None
         self.bulk_result = ([], [])
+        self.delete_summary = TrashDeleteSummary(deleted=[], failures=[])
 
     def list_deleted_assets(self, *, page, page_size, sort):
         self.list_calls.append((page, page_size, sort))
@@ -44,6 +56,18 @@ class _FakeTrashService:
     async def restore_assets(self, asset_ids):
         self.bulk_calls.append([str(asset_id) for asset_id in asset_ids])
         return self.bulk_result
+
+    def permanently_delete_asset(self, asset_id):
+        self.delete_calls.append(str(asset_id))
+        return TrashDeleteResult(asset_id=asset_id)
+
+    def permanently_delete_assets(self, asset_ids):
+        self.bulk_delete_calls.append([str(asset_id) for asset_id in asset_ids])
+        return self.delete_summary
+
+    def empty_trash(self):
+        self.empty_calls += 1
+        return self.delete_summary
 
 
 class TrashApiTest(unittest.TestCase):
@@ -172,6 +196,60 @@ class TrashApiTest(unittest.TestCase):
         self.assertEqual(response.restored, 1)
         self.assertEqual(response.failed, 1)
         self.assertEqual(response.failures[0].asset_id, missing_id)
+
+    def test_single_permanent_delete_returns_no_content(self) -> None:
+        deleted_asset = self._asset(deleted=True)
+        service = _FakeTrashService()
+
+        response = permanently_delete_asset(
+            asset_id=deleted_asset.id,
+            trash_service=service,
+            current_user=self.user,
+        )
+
+        self.assertEqual(service.delete_calls, [str(deleted_asset.id)])
+        self.assertEqual(response.status_code, 204)
+
+    def test_bulk_permanent_delete_returns_partial_failures(self) -> None:
+        deleted_asset = self._asset(deleted=True)
+        missing_id = uuid4()
+        service = _FakeTrashService()
+        service.delete_summary = TrashDeleteSummary(
+            deleted=[TrashDeleteResult(asset_id=deleted_asset.id)],
+            failures=[(missing_id, "Asset not found in trash")],
+        )
+
+        response = permanently_delete_assets(
+            payload=TrashBulkDeleteRequest(asset_ids=[deleted_asset.id, missing_id]),
+            trash_service=service,
+            current_user=self.user,
+        )
+
+        self.assertEqual(
+            service.bulk_delete_calls,
+            [[str(deleted_asset.id), str(missing_id)]],
+        )
+        self.assertEqual(response.requested, 2)
+        self.assertEqual(response.deleted, 1)
+        self.assertEqual(response.failed, 1)
+        self.assertEqual(response.failures[0].asset_id, missing_id)
+
+    def test_empty_trash_returns_summary(self) -> None:
+        deleted_asset = self._asset(deleted=True)
+        service = _FakeTrashService()
+        service.delete_summary = TrashDeleteSummary(
+            deleted=[TrashDeleteResult(asset_id=deleted_asset.id)],
+            failures=[],
+        )
+
+        response = empty_trash(
+            trash_service=service,
+            current_user=self.user,
+        )
+
+        self.assertEqual(service.empty_calls, 1)
+        self.assertEqual(response.deleted, 1)
+        self.assertEqual(response.failed, 0)
 
 
 if __name__ == "__main__":

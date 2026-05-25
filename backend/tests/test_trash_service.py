@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 import tempfile
 import unittest
@@ -24,33 +25,35 @@ from app.services.trash.service import TrashService
 
 
 class _FakeAssetRepository:
-    def __init__(self, asset: Asset | None) -> None:
-        self.asset = asset
+    def __init__(self, assets: list[Asset] | None = None) -> None:
+        self.assets = {asset.id: asset for asset in (assets or [])}
         self.restored_ids: list[str] = []
+        self.deleted_ids: list[str] = []
 
     def get_deleted_asset(self, asset_id):
-        if (
-            self.asset is not None
-            and self.asset.id == asset_id
-            and self.asset.deleted_at is not None
-        ):
-            return self.asset
+        asset = self.assets.get(asset_id)
+        if asset is not None and asset.deleted_at is not None:
+            return asset
         return None
 
     def restore_deleted_asset(self, asset):
         asset.deleted_at = None
         self.restored_ids.append(str(asset.id))
-        self.asset = asset
+        self.assets[asset.id] = asset
         return asset
 
     def get_active_asset_detail(self, asset_id):
-        if (
-            self.asset is None
-            or self.asset.id != asset_id
-            or self.asset.deleted_at is not None
-        ):
+        asset = self.assets.get(asset_id)
+        if asset is None or asset.deleted_at is not None:
             return None
-        return (self.asset, [], [])
+        return (asset, [], [])
+
+    def list_all_deleted_assets(self):
+        return [asset for asset in self.assets.values() if asset.deleted_at is not None]
+
+    def delete_asset_record(self, asset):
+        self.deleted_ids.append(str(asset.id))
+        self.assets.pop(asset.id, None)
 
 
 class _FakePeopleMaintenance:
@@ -130,7 +133,7 @@ class TrashServiceTest(unittest.TestCase):
             source_path.write_bytes(b"stub")
             asset = self._asset(deleted=True)
             service = TrashService(session=None)
-            service.asset_repository = _FakeAssetRepository(asset)
+            service.asset_repository = _FakeAssetRepository([asset])
             service.people_maintenance = _FakePeopleMaintenance()
             service.face_repository = _FakeFaceRepository(has_current_faces=True)
             service.embedding_repository = _FakeEmbeddingRepository(
@@ -190,7 +193,7 @@ class TrashServiceTest(unittest.TestCase):
             source_path.write_bytes(b"stub")
             asset = self._asset(deleted=True)
             service = TrashService(session=None)
-            service.asset_repository = _FakeAssetRepository(asset)
+            service.asset_repository = _FakeAssetRepository([asset])
             service.people_maintenance = _FakePeopleMaintenance()
             service.face_repository = _FakeFaceRepository(has_current_faces=False)
             service.embedding_repository = _FakeEmbeddingRepository(
@@ -222,7 +225,7 @@ class TrashServiceTest(unittest.TestCase):
     def test_restore_asset_rejects_missing_source_file(self) -> None:
         asset = self._asset(deleted=True)
         service = TrashService(session=None)
-        service.asset_repository = _FakeAssetRepository(asset)
+        service.asset_repository = _FakeAssetRepository([asset])
 
         with patch(
             "app.services.trash.service.master_path_to_source_path",
@@ -232,6 +235,139 @@ class TrashServiceTest(unittest.TestCase):
                 asyncio.run(service.restore_asset(asset.id))
 
         self.assertEqual(exc.exception.status_code, 409)
+
+    def test_permanently_delete_asset_removes_files_and_deletes_record(self) -> None:
+        with tempfile.TemporaryDirectory() as originals_dir, tempfile.TemporaryDirectory() as processed_dir:
+            asset = self._asset(deleted=True)
+            source_path = Path(originals_dir) / asset.master_path
+            source_path.parent.mkdir(parents=True, exist_ok=True)
+            source_path.write_bytes(b"original")
+            generated_dir = Path(processed_dir) / "assets" / str(asset.id)
+            generated_dir.mkdir(parents=True, exist_ok=True)
+            (generated_dir / "small.webp").write_bytes(b"small")
+
+            service = TrashService(session=MagicMock())
+            service.asset_repository = _FakeAssetRepository([asset])
+
+            with patch.dict(
+                os.environ,
+                {
+                    "MEDIA_ORIGINALS_DIR": originals_dir,
+                    "MEDIA_PROCESSED_DIR": processed_dir,
+                },
+                clear=False,
+            ):
+                with (
+                    patch(
+                        "app.services.trash.service.master_path_to_source_path",
+                        return_value=source_path,
+                    ),
+                    patch(
+                        "app.services.trash.service.processed_asset_dir",
+                        return_value=generated_dir,
+                    ),
+                    patch(
+                        "app.services.trash.service.MEDIA_PROCESSED_DIR",
+                        new=Path(processed_dir).resolve(),
+                    ),
+                ):
+                    result = service.permanently_delete_asset(asset.id)
+
+        self.assertEqual(result.asset_id, asset.id)
+        self.assertFalse(source_path.exists())
+        self.assertFalse(generated_dir.exists())
+        self.assertEqual(service.asset_repository.deleted_ids, [str(asset.id)])
+
+    def test_permanently_delete_asset_rejects_active_asset(self) -> None:
+        asset = self._asset(deleted=False)
+        service = TrashService(session=MagicMock())
+        service.asset_repository = _FakeAssetRepository([asset])
+
+        with self.assertRaises(HTTPException) as exc:
+            service.permanently_delete_asset(asset.id)
+
+        self.assertEqual(exc.exception.status_code, 404)
+        self.assertEqual(service.asset_repository.deleted_ids, [])
+
+    def test_bulk_permanent_delete_deduplicates_and_reports_failures(self) -> None:
+        deleted_asset = self._asset(deleted=True)
+        active_asset = self._asset(deleted=False)
+        service = TrashService(session=MagicMock())
+        service.asset_repository = _FakeAssetRepository([deleted_asset, active_asset])
+
+        with (
+            patch.object(service, "_delete_asset_files") as delete_files_mock,
+        ):
+            summary = service.permanently_delete_assets(
+                [deleted_asset.id, deleted_asset.id, active_asset.id]
+            )
+
+        self.assertEqual([item.asset_id for item in summary.deleted], [deleted_asset.id])
+        self.assertEqual(summary.failures, [(active_asset.id, "Asset not found in trash")])
+        delete_files_mock.assert_called_once_with(deleted_asset)
+        self.assertEqual(service.asset_repository.deleted_ids, [str(deleted_asset.id)])
+
+    def test_empty_trash_deletes_only_trashed_assets(self) -> None:
+        deleted_asset = self._asset(deleted=True)
+        active_asset = self._asset(deleted=False)
+        service = TrashService(session=MagicMock())
+        service.asset_repository = _FakeAssetRepository([deleted_asset, active_asset])
+
+        with patch.object(service, "_delete_asset_files") as delete_files_mock:
+            summary = service.empty_trash()
+
+        self.assertEqual([item.asset_id for item in summary.deleted], [deleted_asset.id])
+        self.assertEqual(summary.failures, [])
+        delete_files_mock.assert_called_once_with(deleted_asset)
+        self.assertEqual(service.asset_repository.deleted_ids, [str(deleted_asset.id)])
+
+    def test_permanently_delete_asset_allows_missing_files(self) -> None:
+        asset = self._asset(deleted=True)
+        service = TrashService(session=MagicMock())
+        service.asset_repository = _FakeAssetRepository([asset])
+
+        with (
+            patch(
+                "app.services.trash.service.master_path_to_source_path",
+                return_value=Path("/tmp/missing-original.jpg"),
+            ),
+            patch(
+                "app.services.trash.service.processed_asset_dir",
+                return_value=Path("/tmp/missing-processed"),
+            ),
+            patch(
+                "app.services.trash.service.MEDIA_PROCESSED_DIR",
+                new=Path("/tmp").resolve(),
+            ),
+        ):
+            service.permanently_delete_asset(asset.id)
+
+        self.assertEqual(service.asset_repository.deleted_ids, [str(asset.id)])
+
+    def test_permanently_delete_asset_rejects_invalid_processed_dir(self) -> None:
+        asset = self._asset(deleted=True)
+        service = TrashService(session=MagicMock())
+        service.asset_repository = _FakeAssetRepository([asset])
+
+        with (
+            patch(
+                "app.services.trash.service.master_path_to_source_path",
+                return_value=Path("/tmp/original.jpg"),
+            ),
+            patch(
+                "app.services.trash.service.processed_asset_dir",
+                return_value=Path("/var/outside"),
+            ),
+            patch(
+                "app.services.trash.service.MEDIA_PROCESSED_DIR",
+                new=Path("/tmp").resolve(),
+            ),
+        ):
+            with self.assertRaises(HTTPException) as exc:
+                service.permanently_delete_asset(asset.id)
+
+        self.assertEqual(exc.exception.status_code, 409)
+        self.assertEqual(service.asset_repository.deleted_ids, [])
 
 
 if __name__ == "__main__":

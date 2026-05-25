@@ -4,6 +4,7 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi.responses import Response
 
 from app.core.auth import get_current_user
 from app.models import Asset, User
@@ -13,8 +14,12 @@ from app.services.trash.schemas import (
     TrashAssetDetailResponse,
     TrashAssetItem,
     TrashAssetListResponse,
+    TrashBulkDeleteRequest,
+    TrashDeleteFailure,
+    TrashDeleteSummaryResponse,
     TrashBulkRestoreRequest,
     TrashBulkRestoreResponse,
+    TrashEmptyResponse,
     TrashFaceSummary,
     TrashPersonSummary,
     TrashRestoreFailure,
@@ -181,6 +186,38 @@ def _build_restore_response(
     )
 
 
+def _build_delete_summary_response(
+    *,
+    requested: int,
+    deleted: int,
+    failures: list[tuple[UUID, str]],
+) -> TrashDeleteSummaryResponse:
+    return TrashDeleteSummaryResponse(
+        requested=requested,
+        deleted=deleted,
+        failed=len(failures),
+        failures=[
+            TrashDeleteFailure(asset_id=asset_id, detail=detail)
+            for asset_id, detail in failures
+        ],
+    )
+
+
+def _build_empty_trash_response(
+    *,
+    deleted: int,
+    failures: list[tuple[UUID, str]],
+) -> TrashEmptyResponse:
+    return TrashEmptyResponse(
+        deleted=deleted,
+        failed=len(failures),
+        failures=[
+            TrashDeleteFailure(asset_id=asset_id, detail=detail)
+            for asset_id, detail in failures
+        ],
+    )
+
+
 @router.get("/assets", response_model=TrashAssetListResponse, include_in_schema=False)
 @router.get("/assets/", response_model=TrashAssetListResponse)
 def list_deleted_assets(
@@ -250,4 +287,44 @@ async def restore_deleted_assets(
             TrashRestoreFailure(asset_id=asset_id, detail=detail)
             for asset_id, detail in failures
         ],
+    )
+
+
+@router.delete("/assets/{asset_id}", status_code=status.HTTP_204_NO_CONTENT)
+def permanently_delete_asset(
+    asset_id: UUID,
+    trash_service: TrashService = Depends(get_trash_service),
+    current_user: User = Depends(get_current_user),
+) -> Response:
+    del current_user
+    trash_service.permanently_delete_asset(asset_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/assets/delete", response_model=TrashDeleteSummaryResponse)
+def permanently_delete_assets(
+    payload: TrashBulkDeleteRequest,
+    trash_service: TrashService = Depends(get_trash_service),
+    current_user: User = Depends(get_current_user),
+) -> TrashDeleteSummaryResponse:
+    del current_user
+    result = trash_service.permanently_delete_assets(payload.asset_ids)
+    return _build_delete_summary_response(
+        requested=len(payload.asset_ids),
+        deleted=len(result.deleted),
+        failures=result.failures,
+    )
+
+
+@router.delete("/assets", response_model=TrashEmptyResponse, include_in_schema=False)
+@router.delete("/assets/", response_model=TrashEmptyResponse)
+def empty_trash(
+    trash_service: TrashService = Depends(get_trash_service),
+    current_user: User = Depends(get_current_user),
+) -> TrashEmptyResponse:
+    del current_user
+    result = trash_service.empty_trash()
+    return _build_empty_trash_response(
+        deleted=len(result.deleted),
+        failures=result.failures,
     )
