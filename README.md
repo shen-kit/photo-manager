@@ -117,7 +117,7 @@ flowchart LR
 │   │   ├── api/v1/features/       # FastAPI route modules by feature
 │   │   ├── core/                  # DB, auth, security, logging
 │   │   ├── services/              # domain services, repositories, jobs
-│   │   └── models.py              # SQLModel table models
+│   │   └── models/                # domain-organized SQLModel table modules
 │   ├── worker/                    # ARQ worker entrypoint, settings, task wiring
 │   ├── Dockerfile
 │   ├── requirements.txt
@@ -162,7 +162,7 @@ flowchart LR
 - Model-runtime boundaries are explicit where they are likely to vary:
   - `backend/app/services/embeddings/provider.py` defines the embedding provider seam
   - `backend/app/services/face_detection/provider.py` defines the face-detection provider seam
-- SQLModel table models are centralized in `backend/app/models.py`.
+- SQLModel table models live under `backend/app/models/` and are re-exported from `app.models`.
 - Worker task registration lives in `backend/worker/`.
 
 ### Frontend conventions
@@ -174,7 +174,7 @@ flowchart LR
 
 ## Database schema
 
-The schema is defined in [backend/app/models.py](backend/app/models.py) and migrated through [backend/alembic/versions](backend/alembic/versions).
+The schema is defined in [backend/app/models/](backend/app/models) and migrated through [backend/alembic/versions](backend/alembic/versions).
 
 ### Core tables
 
@@ -853,7 +853,7 @@ Important route groups:
 
 ### Migration workflow
 
-- Update SQLModel definitions in `backend/app/models.py`.
+- Update SQLModel definitions in `backend/app/models/` and keep re-exports in `backend/app/models/__init__.py` current.
 - Generate or hand-write an Alembic migration in `backend/alembic/versions/`.
 - Apply with `alembic upgrade head`.
 - For vector/index changes, verify against a real Postgres instance with `pgvector`.
