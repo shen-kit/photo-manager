@@ -30,6 +30,9 @@ class _FakePeopleRepository:
             self.people.pop(person.id, None)
         return [person.id for person in people]
 
+    def list_existing_person_ids(self, person_ids):
+        return [person_id for person_id in person_ids if person_id in self.people]
+
 
 class _FakeThumbnailService:
     def __init__(self) -> None:

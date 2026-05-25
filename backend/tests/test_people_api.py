@@ -4,38 +4,37 @@ import asyncio
 import unittest
 from datetime import datetime, timezone
 from uuid import uuid4
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
-from fastapi import HTTPException
 from starlette.requests import Request
 
 from app.api.v1.features.people import (
     get_person,
     merge_people,
 )
-from app.models import Job, Person, User
+from app.models import Person, User
 from app.services.people.service import PersonMergeSummary
 from app.services.people_clustering.tasks import cluster_faces
 
 
-class _FakeJobService:
-    def __init__(self, job: Job | None = None) -> None:
-        self.job = job
-        self.failed: list[tuple[object, str]] = []
+class _FakeJobTaskContext:
+    def __init__(self, session, *, job_id) -> None:
+        del session
+        self.job_id = job_id
+        self.running_messages: list[str] = []
+        self.notifications: list[object] = []
+        self.completions: list[dict[str, object]] = []
 
-    def get_job(self, job_id):
-        if self.job is None:
-            raise AssertionError(job_id)
-        return self.job
+    def mark_running(self, message):
+        self.running_messages.append(message)
 
-    def fail_job(self, job_id, message):
-        self.failed.append((job_id, message))
+    def notify(self, notification):
+        self.notifications.append(notification)
 
-    def mark_running(self, job_id, message=None):
-        return self.job
-
-    def complete_job(self, job_id, *, result=None, message=None):
-        return self.job
+    def complete(self, message, *, result=None, notification=None):
+        self.completions.append({"message": message, "result": result})
+        if notification is not None:
+            self.notifications.append(notification)
 
 
 class PeopleApiTest(unittest.TestCase):
@@ -71,21 +70,6 @@ class PeopleApiTest(unittest.TestCase):
                 self.kwargs = kwargs
                 return _Summary()
 
-        job = Job(
-            id=uuid4(),
-            type="cluster_faces",
-            status="queued",
-            progress_current=0,
-            created_at=datetime.now(timezone.utc),
-        )
-
-        class _NotificationService:
-            def __init__(self, session):
-                self.session = session
-
-            def create_notification(self, **kwargs):
-                return None
-
         class _SessionContext:
             def __enter__(self):
                 return object()
@@ -93,7 +77,13 @@ class PeopleApiTest(unittest.TestCase):
             def __exit__(self, exc_type, exc, tb):
                 return False
 
-        job_service = _FakeJobService(job)
+        job_id = uuid4()
+        job_contexts: list[_FakeJobTaskContext] = []
+
+        def make_job_context(session, *, job_id):
+            context = _FakeJobTaskContext(session, job_id=job_id)
+            job_contexts.append(context)
+            return context
 
         with (
             patch(
@@ -101,12 +91,8 @@ class PeopleApiTest(unittest.TestCase):
                 return_value=_SessionContext(),
             ),
             patch(
-                "app.services.people_clustering.tasks.JobService",
-                return_value=job_service,
-            ),
-            patch(
-                "app.services.people_clustering.tasks.NotificationService",
-                _NotificationService,
+                "app.services.people_clustering.tasks.JobTaskContext",
+                side_effect=make_job_context,
             ),
             patch(
                 "app.services.people_clustering.tasks.PeopleClusteringService",
@@ -116,7 +102,7 @@ class PeopleApiTest(unittest.TestCase):
             result = asyncio.run(
                 cluster_faces(
                     {},
-                    str(job.id),
+                    str(job_id),
                     0.4,
                     30,
                     2,
@@ -131,6 +117,15 @@ class PeopleApiTest(unittest.TestCase):
                 "faces_assigned": 3,
                 "skipped_small_clusters": 1,
             },
+        )
+        self.assertEqual(len(job_contexts), 1)
+        self.assertEqual(
+            job_contexts[0].running_messages,
+            ["Clustering unassigned faces"],
+        )
+        self.assertEqual(
+            job_contexts[0].completions[0]["result"],
+            result,
         )
 
     def test_merge_people_endpoint_returns_summary(self) -> None:

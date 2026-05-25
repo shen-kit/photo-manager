@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
+
+sys.modules.setdefault("open_clip", MagicMock())
+sys.modules.setdefault("torch", MagicMock())
 
 from fastapi import HTTPException
 
@@ -198,6 +202,10 @@ class TrashServiceTest(unittest.TestCase):
                 patch(
                     "app.services.trash.service.master_path_to_source_path",
                     return_value=source_path,
+                ),
+                patch(
+                    "app.services.trash.service.TrashService._asset_needs_metadata_refresh",
+                    return_value=False,
                 ),
                 patch(
                     "app.services.trash.service.enqueue_asset_faces_job",

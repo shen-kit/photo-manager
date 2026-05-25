@@ -24,35 +24,7 @@ from app.services.face_assignment.service import (
     MatchedFaceAssignment,
 )
 from app.services.faces.service import FaceManagementServiceError
-
-
-class _FakeJobService:
-    def __init__(self, job: Job | None = None) -> None:
-        self.job = job
-        self.failed: list[tuple[object, str]] = []
-        self.created: list[tuple[str, dict[str, object] | None, int | None]] = []
-
-    def get_job(self, job_id):
-        if self.job is None:
-            raise AssertionError(job_id)
-        return self.job
-
-    def fail_job(self, job_id, message):
-        self.failed.append((job_id, message))
-
-    def create_job(self, type: str, parameters=None, progress_total=None):
-        self.created.append((type, parameters, progress_total))
-        if self.job is None:
-            self.job = Job(
-                id=uuid4(),
-                type=type,
-                status="queued",
-                progress_current=0,
-                progress_total=progress_total,
-                parameters=parameters,
-                created_at=datetime.now(timezone.utc),
-            )
-        return self.job
+from app.services.jobs.dispatcher import DispatchResult
 
 
 class _FakeFaceQueryService:
@@ -100,36 +72,43 @@ class FacesApiTest(unittest.TestCase):
             progress_current=0,
             created_at=datetime.now(timezone.utc),
         )
-        job_service = _FakeJobService(job)
         face_query_service = _FakeFaceQueryService()
+        dispatch_result = DispatchResult(
+            job=job,
+            created=True,
+            reused_existing=False,
+        )
 
         with patch(
-            "app.api.v1.features.faces.enqueue_asset_faces_job",
-            new=AsyncMock(return_value=True),
-        ) as enqueue_mock:
+            "app.api.v1.features.faces.JobDispatcher.dispatch",
+            new=AsyncMock(return_value=dispatch_result),
+        ) as dispatch_mock, patch(
+            "app.api.v1.features.faces.resolve_default_model_id",
+            return_value=17,
+        ):
             response = asyncio.run(
                 process_asset_faces(
                     asset_id=asset_id,
                     force=True,
                     auto_match=True,
                     face_query_service=face_query_service,
-                    job_service=job_service,
                     current_user=self.user,
                 )
             )
 
         self.assertEqual(response.id, job.id)
-        self.assertEqual(job_service.created[0][0], "process_asset_faces")
+        self.assertEqual(face_query_service.required_asset_ids, [asset_id])
+        dispatch_kwargs = dispatch_mock.await_args.kwargs
+        self.assertEqual(dispatch_kwargs["job_name"], "process_asset_faces")
         self.assertEqual(
-            job_service.created[0][1],
+            dispatch_kwargs["args"],
+            [str(asset_id), True, True, None],
+        )
+        self.assertEqual(
+            dispatch_kwargs["parameters"],
             {"asset_id": str(asset_id), "force": True, "auto_match": True},
         )
-        enqueue_mock.assert_awaited_once_with(
-            asset_id,
-            force=True,
-            auto_match=True,
-            job_id=job.id,
-        )
+        self.assertEqual(dispatch_kwargs["related_asset_id"], asset_id)
 
     def test_match_asset_faces_returns_summary_without_embeddings(self) -> None:
         asset_id = uuid4()
@@ -222,7 +201,6 @@ class FacesApiTest(unittest.TestCase):
                     asset_id=asset_id,
                     force=False,
                     face_query_service=face_query_service,
-                    job_service=_FakeJobService(),
                     current_user=self.user,
                 )
             )

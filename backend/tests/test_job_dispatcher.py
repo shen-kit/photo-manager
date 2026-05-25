@@ -240,9 +240,17 @@ class WorkerSettingsTest(unittest.TestCase):
             clear=False,
         ):
             workers = build_workers(queues=["interactive", "preview"], ctx=ctx)
+        for worker in workers:
+            self.addCleanup(worker.loop.close)
 
-        self.assertEqual([worker.queue_name for worker in workers], ["arq:queue:interactive", "arq:queue:preview"])
-        self.assertIs(workers[0].ctx["worker_semaphore"], workers[1].ctx["worker_semaphore"])
+        self.assertEqual(
+            [worker.queue_name for worker in workers],
+            ["arq:queue:interactive", "arq:queue:preview"],
+        )
+        self.assertIs(
+            workers[0].ctx["worker_semaphore"],
+            workers[1].ctx["worker_semaphore"],
+        )
         self.assertEqual(workers[0].max_jobs, 2)
 
 
