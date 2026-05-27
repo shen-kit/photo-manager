@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation } from "@tanstack/react-query";
-import { CalendarDays, Home, LoaderCircle, LogOut, Search, Trash2, Users, Workflow } from "lucide-react";
+import { CalendarDays, Home, LoaderCircle, LogOut, Search, ShieldCheck, Tags, Trash2, Users, Workflow } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import type { ReactNode } from "react";
@@ -52,6 +52,10 @@ export function AppShell({
           ? pathname.startsWith("/timeline")
         : href === "/people"
           ? pathname.startsWith("/people")
+          : href === "/tags"
+            ? pathname.startsWith("/tags")
+          : href === "/system-integrity"
+            ? pathname.startsWith("/system-integrity")
           : href === "/trash"
             ? pathname.startsWith("/trash")
           : pathname === href;
@@ -96,6 +100,14 @@ export function AppShell({
               <Link href="/people" className={navLinkClass("/people")}>
                 <Users className="h-4 w-4" />
                 People
+              </Link>
+              <Link href="/tags" className={navLinkClass("/tags")}>
+                <Tags className="h-4 w-4" />
+                Tags
+              </Link>
+              <Link href="/system-integrity" className={navLinkClass("/system-integrity")}>
+                <ShieldCheck className="h-4 w-4" />
+                Integrity
               </Link>
               <Link href="/jobs" className={navLinkClass("/jobs")}>
                 <Workflow className="h-4 w-4" />

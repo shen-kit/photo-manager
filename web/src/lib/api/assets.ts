@@ -15,6 +15,7 @@ type ListAssetsParams = {
   month?: string;
   day?: string;
   personIds?: string[];
+  tagIds?: number[];
 };
 
 export function listAssets(params: ListAssetsParams = {}) {
@@ -34,6 +35,9 @@ export function listAssets(params: ListAssetsParams = {}) {
   }
   if (params.personIds?.length) {
     search.set("person_ids", params.personIds.join(","));
+  }
+  if (params.tagIds?.length) {
+    search.set("tag_ids", params.tagIds.join(","));
   }
   return apiRequest<AssetGridPage>(`/api/v1/assets?${search.toString()}`, {
     auth: true,
@@ -97,5 +101,37 @@ export function deleteAsset(assetId: string) {
     method: "DELETE",
     auth: true,
     contentType: null,
+  });
+}
+
+export function addAssetTag(assetId: string, tagId: number) {
+  return apiRequest<void>(`/api/v1/assets/${assetId}/tags/${tagId}`, {
+    method: "POST",
+    auth: true,
+    contentType: null,
+  });
+}
+
+export function removeAssetTag(assetId: string, tagId: number) {
+  return apiRequest<void>(`/api/v1/assets/${assetId}/tags/${tagId}`, {
+    method: "DELETE",
+    auth: true,
+    contentType: null,
+  });
+}
+
+export function batchAddAssetTags(assetIds: string[], tagIds: number[]) {
+  return apiRequest<{ updated_count: number }>("/api/v1/assets/tags:batch-add", {
+    method: "POST",
+    body: JSON.stringify({ asset_ids: assetIds, tag_ids: tagIds }),
+    auth: true,
+  });
+}
+
+export function batchRemoveAssetTags(assetIds: string[], tagIds: number[]) {
+  return apiRequest<{ updated_count: number }>("/api/v1/assets/tags:batch-remove", {
+    method: "POST",
+    body: JSON.stringify({ asset_ids: assetIds, tag_ids: tagIds }),
+    auth: true,
   });
 }

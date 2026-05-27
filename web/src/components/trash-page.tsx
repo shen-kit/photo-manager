@@ -15,10 +15,17 @@ import { AppShell } from "@/components/app-shell";
 import { LoginScreen } from "@/components/login-screen";
 import { TrashDetailModal } from "@/components/trash-detail-modal";
 import { useToast } from "@/components/toast-provider";
-import { listTrashAssets, restoreTrashAsset, restoreTrashAssets } from "@/lib/api/trash";
+import {
+  emptyTrash,
+  listTrashAssets,
+  permanentlyDeleteTrashAsset,
+  permanentlyDeleteTrashAssets,
+  restoreTrashAsset,
+  restoreTrashAssets,
+} from "@/lib/api/trash";
 import { formatDateTime } from "@/lib/format";
 import { useSessionBootstrap } from "@/lib/use-session-bootstrap";
-import type { TrashAssetListItem, TrashRestoreFailure, TrashSort } from "@/lib/types";
+import type { TrashAssetListItem, TrashDeleteFailure, TrashRestoreFailure, TrashSort } from "@/lib/types";
 
 const PAGE_SIZE = 24;
 
@@ -60,6 +67,7 @@ export function TrashPage() {
   const [selectedAssetIds, setSelectedAssetIds] = useState<string[]>([]);
   const [detailAssetId, setDetailAssetId] = useState<string | null>(null);
   const [bulkFailures, setBulkFailures] = useState<TrashRestoreFailure[]>([]);
+  const [deleteFailures, setDeleteFailures] = useState<TrashDeleteFailure[]>([]);
 
   const trashQuery = useQuery({
     queryKey: ["trash-assets", page, sort],
@@ -91,6 +99,49 @@ export function TrashPage() {
       }
       const restoredIds = new Set(response.items.map((item) => item.asset.id));
       setSelectedAssetIds((current) => current.filter((assetId) => !restoredIds.has(assetId)));
+      await queryClient.invalidateQueries({ queryKey: ["trash-assets"] });
+      await queryClient.invalidateQueries({ queryKey: ["assets"] });
+      await queryClient.invalidateQueries({ queryKey: ["search"] });
+    },
+    onError: (error: Error) => pushToast(error.message, "error"),
+  });
+
+  const singleDeleteMutation = useMutation({
+    mutationFn: permanentlyDeleteTrashAsset,
+    onSuccess: async (_, deletedAssetId) => {
+      pushToast("Asset permanently deleted", "success");
+      setSelectedAssetIds((current) => current.filter((assetId) => assetId !== deletedAssetId));
+      await queryClient.invalidateQueries({ queryKey: ["trash-assets"] });
+      await queryClient.invalidateQueries({ queryKey: ["assets"] });
+      await queryClient.invalidateQueries({ queryKey: ["search"] });
+    },
+    onError: (error: Error) => pushToast(error.message, "error"),
+  });
+
+  const bulkDeleteMutation = useMutation({
+    mutationFn: permanentlyDeleteTrashAssets,
+    onSuccess: async (response) => {
+      setDeleteFailures(response.failures);
+      if (response.deleted > 0) {
+        pushToast(`Permanently deleted ${response.deleted} asset${response.deleted === 1 ? "" : "s"}`, "success");
+      }
+      if (response.failed > 0) {
+        pushToast(`${response.failed} permanent delete failure${response.failed === 1 ? "" : "s"}`, "error");
+      }
+      setSelectedAssetIds([]);
+      await queryClient.invalidateQueries({ queryKey: ["trash-assets"] });
+      await queryClient.invalidateQueries({ queryKey: ["assets"] });
+      await queryClient.invalidateQueries({ queryKey: ["search"] });
+    },
+    onError: (error: Error) => pushToast(error.message, "error"),
+  });
+
+  const emptyTrashMutation = useMutation({
+    mutationFn: emptyTrash,
+    onSuccess: async (response) => {
+      setDeleteFailures(response.failures);
+      pushToast(`Emptied trash: ${response.deleted} deleted, ${response.failed} failed`, response.failed ? "error" : "success");
+      setSelectedAssetIds([]);
       await queryClient.invalidateQueries({ queryKey: ["trash-assets"] });
       await queryClient.invalidateQueries({ queryKey: ["assets"] });
       await queryClient.invalidateQueries({ queryKey: ["search"] });
@@ -133,6 +184,14 @@ export function TrashPage() {
       return;
     }
     bulkRestoreMutation.mutate({ asset_ids: selectedAssetIds });
+  };
+
+  const handleBulkDelete = () => {
+    if (selectedAssetIds.length === 0) {
+      pushToast("Select at least one asset to permanently delete", "info");
+      return;
+    }
+    bulkDeleteMutation.mutate({ asset_ids: selectedAssetIds });
   };
 
   if (isBootstrapping) {
@@ -222,7 +281,7 @@ export function TrashPage() {
                   <RotateCcw className="h-4 w-4" />
                 </div>
                 <div>
-                  <h2 className="text-sm font-semibold text-white">Restore</h2>
+                  <h2 className="text-sm font-semibold text-white">Restore / purge</h2>
                   <p className="text-xs text-slate-400">{selectedCount} selected on this view.</p>
                 </div>
               </div>
@@ -230,7 +289,7 @@ export function TrashPage() {
                 <button
                   type="button"
                   onClick={handleBulkRestore}
-                  disabled={selectedCount === 0 || bulkRestoreMutation.isPending}
+                  disabled={selectedCount === 0 || bulkRestoreMutation.isPending || bulkDeleteMutation.isPending}
                   className="flex w-full items-center justify-center gap-2 rounded-2xl border border-emerald-400/30 bg-emerald-400/10 px-4 py-3 text-sm text-emerald-200 transition hover:bg-emerald-400/20 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {bulkRestoreMutation.isPending ? (
@@ -239,6 +298,24 @@ export function TrashPage() {
                     <RotateCcw className="h-4 w-4" />
                   )}
                   Restore selected
+                </button>
+                <button
+                  type="button"
+                  onClick={handleBulkDelete}
+                  disabled={selectedCount === 0 || bulkDeleteMutation.isPending || bulkRestoreMutation.isPending}
+                  className="flex w-full items-center justify-center gap-2 rounded-2xl border border-rose-400/30 bg-rose-400/10 px-4 py-3 text-sm text-rose-200 transition hover:bg-rose-400/20 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {bulkDeleteMutation.isPending ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                  Permanently delete selected
+                </button>
+                <button
+                  type="button"
+                  onClick={() => emptyTrashMutation.mutate()}
+                  disabled={emptyTrashMutation.isPending || bulkDeleteMutation.isPending || bulkRestoreMutation.isPending}
+                  className="flex w-full items-center justify-center gap-2 rounded-2xl border border-rose-400/30 bg-rose-400/5 px-4 py-3 text-sm text-rose-200 transition hover:bg-rose-400/10 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {emptyTrashMutation.isPending ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                  Empty trash
                 </button>
                 {selectedOnPage.length > 0 ? (
                   <div className="rounded-2xl border border-white/10 bg-black/20 p-3 text-xs text-slate-300">
@@ -250,6 +327,18 @@ export function TrashPage() {
                     <p className="font-medium">Bulk restore issues</p>
                     <ul className="mt-2 space-y-1">
                       {bulkFailures.map((failure) => (
+                        <li key={failure.asset_id}>
+                          {failure.asset_id.slice(0, 8)}: {failure.detail}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+                {deleteFailures.length > 0 ? (
+                  <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-200">
+                    <p className="font-medium">Permanent delete issues</p>
+                    <ul className="mt-2 space-y-1">
+                      {deleteFailures.map((failure) => (
                         <li key={failure.asset_id}>
                           {failure.asset_id.slice(0, 8)}: {failure.detail}
                         </li>
@@ -349,7 +438,7 @@ export function TrashPage() {
                           <button
                             type="button"
                             onClick={() => singleRestoreMutation.mutate(asset.id)}
-                            disabled={singleRestoreMutation.isPending || bulkRestoreMutation.isPending}
+                            disabled={singleRestoreMutation.isPending || bulkRestoreMutation.isPending || singleDeleteMutation.isPending || bulkDeleteMutation.isPending}
                             className="flex items-center gap-2 rounded-2xl border border-emerald-400/30 bg-emerald-400/10 px-3 py-2 text-sm text-emerald-200 transition hover:bg-emerald-400/20 disabled:cursor-not-allowed disabled:opacity-60"
                           >
                             {singleRestoreMutation.isPending && singleRestoreMutation.variables === asset.id ? (
@@ -358,6 +447,19 @@ export function TrashPage() {
                               <RotateCcw className="h-4 w-4" />
                             )}
                             Restore
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => singleDeleteMutation.mutate(asset.id)}
+                            disabled={singleRestoreMutation.isPending || bulkRestoreMutation.isPending || singleDeleteMutation.isPending || bulkDeleteMutation.isPending}
+                            className="flex items-center gap-2 rounded-2xl border border-rose-400/30 bg-rose-400/10 px-3 py-2 text-sm text-rose-200 transition hover:bg-rose-400/20 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {singleDeleteMutation.isPending && singleDeleteMutation.variables === asset.id ? (
+                              <LoaderCircle className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <Trash2 className="h-4 w-4" />
+                            )}
+                            Delete
                           </button>
                         </div>
                       </div>

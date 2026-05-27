@@ -2,8 +2,11 @@ import { apiRequest } from "@/lib/api/client";
 import type {
   TrashAssetDetail,
   TrashAssetListResponse,
+  TrashBulkDeletePayload,
   TrashBulkRestorePayload,
   TrashBulkRestoreResponse,
+  TrashDeleteSummaryResponse,
+  TrashEmptyResponse,
   TrashRestoreResponse,
   TrashSort,
 } from "@/lib/types";
@@ -38,5 +41,29 @@ export function restoreTrashAssets(payload: TrashBulkRestorePayload) {
     method: "POST",
     auth: true,
     body: JSON.stringify(payload),
+  });
+}
+
+export function permanentlyDeleteTrashAsset(assetId: string) {
+  return apiRequest<void>(`/api/v1/trash/assets/${assetId}`, {
+    method: "DELETE",
+    auth: true,
+    contentType: null,
+  });
+}
+
+export function permanentlyDeleteTrashAssets(payload: TrashBulkDeletePayload) {
+  return apiRequest<TrashDeleteSummaryResponse>("/api/v1/trash/assets/delete", {
+    method: "POST",
+    auth: true,
+    body: JSON.stringify(payload),
+  });
+}
+
+export function emptyTrash() {
+  return apiRequest<TrashEmptyResponse>("/api/v1/trash/assets/", {
+    method: "DELETE",
+    auth: true,
+    contentType: null,
   });
 }

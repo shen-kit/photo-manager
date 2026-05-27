@@ -21,6 +21,33 @@ export type AssetTag = {
   path: string;
 };
 
+export type Tag = {
+  id: number;
+  name: string;
+  slug: string;
+  path: string;
+  parent_path: string | null;
+  is_album: boolean;
+  description: string | null;
+  cover_asset_id: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type TagCreatePayload = {
+  name: string;
+  parent_id?: number | null;
+  description?: string | null;
+  cover_asset_id?: string | null;
+};
+
+export type TagUpdatePayload = {
+  name?: string | null;
+  parent_id?: number | null;
+  description?: string | null;
+  cover_asset_id?: string | null;
+};
+
 export type MediaKind = "image" | "video";
 
 export type PersonSummary = {
@@ -387,4 +414,94 @@ export type TrashBulkRestoreResponse = {
   failed: number;
   items: TrashRestoreResponse[];
   failures: TrashRestoreFailure[];
+};
+
+export type TrashDeleteFailure = {
+  asset_id: string;
+  detail: string;
+};
+
+export type TrashBulkDeletePayload = {
+  asset_ids: string[];
+};
+
+export type TrashDeleteSummaryResponse = {
+  requested: number;
+  deleted: number;
+  failed: number;
+  failures: TrashDeleteFailure[];
+};
+
+export type TrashEmptyResponse = {
+  deleted: number;
+  failed: number;
+  failures: TrashDeleteFailure[];
+};
+
+export type DiagnosticDefinition = {
+  key: string;
+  title: string;
+  description: string;
+  supports_repair: boolean;
+  repair_job_key: string | null;
+  latest_run_id: string | null;
+  latest_status: string | null;
+  latest_health_state: string | null;
+  latest_checked_at: string | null;
+  active_run_id: string | null;
+};
+
+export type DiagnosticDefinitionList = {
+  items: DiagnosticDefinition[];
+};
+
+export type DiagnosticRun = {
+  id: string;
+  diagnostic_key: string;
+  status: string;
+  health_state: string | null;
+  summary_json: Record<string, unknown> | null;
+  sample_items_json: Record<string, unknown> | null;
+  error_message: string | null;
+  repair_job_key: string | null;
+  related_job_id: string | null;
+  latest_repair_job_id: string | null;
+  requested_by_user_id: string | null;
+  created_at: string;
+  started_at: string | null;
+  checked_at: string | null;
+  finished_at: string | null;
+};
+
+export type DiagnosticRunDetail = DiagnosticRun & {
+  related_job: Job | null;
+  latest_repair_job: Job | null;
+};
+
+export type DiagnosticRunList = {
+  items: DiagnosticRun[];
+};
+
+export type DiagnosticRunItem = {
+  id: string;
+  diagnostic_run_id: string;
+  asset_id: string | null;
+  person_id: string | null;
+  relative_path: string | null;
+  item_type: string;
+  reason_code: string;
+  repairable: boolean;
+  detail_json: Record<string, unknown> | null;
+  created_at: string;
+};
+
+export type DiagnosticRunItemPage = {
+  items: DiagnosticRunItem[];
+  limit: number;
+  offset: number;
+  total: number;
+};
+
+export type DiagnosticRunResponse = {
+  run: DiagnosticRun;
 };

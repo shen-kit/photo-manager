@@ -16,9 +16,10 @@ import { createPortal } from "react-dom";
 
 import { AuthenticatedPreview } from "@/components/authenticated-preview";
 import { useToast } from "@/components/toast-provider";
-import { ensureAssetPreviews, getAsset } from "@/lib/api/assets";
+import { addAssetTag, ensureAssetPreviews, getAsset, removeAssetTag } from "@/lib/api/assets";
 import { getAssetFaces, triggerAssetFaceProcessing, updateAssetFace } from "@/lib/api/faces";
 import { listPeople, updatePersonThumbnail } from "@/lib/api/people";
+import { listTags } from "@/lib/api/tags";
 import type { AssetFace, AssetPreviewEnsureItem, Person } from "@/lib/types";
 
 type AssetDetailModalNavigationItem = {
@@ -78,6 +79,7 @@ export function AssetDetailModal({
   const [forceFaceProcessing, setForceFaceProcessing] = useState(false);
   const [showFaces, setShowFaces] = useState(false);
   const [selectedPersonByFaceId, setSelectedPersonByFaceId] = useState<Record<string, string>>({});
+  const [selectedTagId, setSelectedTagId] = useState<string>("");
   const [prefetchedPreviewItems, setPrefetchedPreviewItems] = useState<Record<string, AssetPreviewEnsureItem>>({});
   const [prefetchedPreviewObjectUrls, setPrefetchedPreviewObjectUrls] = useState<Record<string, string>>({});
   const prefetchedPreviewUrlsRef = useRef<Set<string>>(new Set());
@@ -98,6 +100,11 @@ export function AssetDetailModal({
     queryKey: ["people", "face-assignment-options"],
     queryFn: () => listPeople({ include_hidden: true }),
     enabled: Boolean(assetId) && showFaces,
+  });
+  const tagsQuery = useQuery({
+    queryKey: ["tags", "asset-detail-options"],
+    queryFn: listTags,
+    enabled: Boolean(assetId),
   });
 
   const processFacesMutation = useMutation({
@@ -141,6 +148,27 @@ export function AssetDetailModal({
     onError: (mutationError: Error) => pushToast(mutationError.message, "error"),
   });
 
+  const addTagMutation = useMutation({
+    mutationFn: () => addAssetTag(assetId as string, Number(selectedTagId)),
+    onSuccess: async () => {
+      pushToast("Tag added", "success");
+      setSelectedTagId("");
+      await queryClient.invalidateQueries({ queryKey: ["asset", assetId] });
+      await queryClient.invalidateQueries({ queryKey: ["assets"] });
+    },
+    onError: (mutationError: Error) => pushToast(mutationError.message, "error"),
+  });
+
+  const removeTagMutation = useMutation({
+    mutationFn: (tagId: number) => removeAssetTag(assetId as string, tagId),
+    onSuccess: async () => {
+      pushToast("Tag removed", "success");
+      await queryClient.invalidateQueries({ queryKey: ["asset", assetId] });
+      await queryClient.invalidateQueries({ queryKey: ["assets"] });
+    },
+    onError: (mutationError: Error) => pushToast(mutationError.message, "error"),
+  });
+
   useEffect(() => {
     setMounted(true);
     return () => {
@@ -155,10 +183,12 @@ export function AssetDetailModal({
     setShowFaces(false);
     setForceFaceProcessing(false);
     setSelectedPersonByFaceId({});
+    setSelectedTagId("");
   }, [assetId]);
 
   const people = peopleQuery.data ?? [];
   const faces = facesQuery.data ?? [];
+  const tags = tagsQuery.data ?? [];
 
   useEffect(() => {
     if (!faces.length) {
@@ -179,6 +209,7 @@ export function AssetDetailModal({
     () => people.slice().sort((a, b) => (a.asset_count - b.asset_count > 0 ? -1 : 1)),
     [people],
   );
+  const sortedTags = useMemo(() => tags.slice().sort((a, b) => a.path.localeCompare(b.path)), [tags]);
   const currentAssetIndex = useMemo(
     () => navigationItems.findIndex((item) => item.id === assetId),
     [assetId, navigationItems],
@@ -533,6 +564,47 @@ export function AssetDetailModal({
                   {showFaces && !facesQuery.isLoading && !facesQuery.isError && faces.length === 0 ? (
                     <p className="mt-3 text-xs text-slate-500">No faces detected for this asset yet.</p>
                   ) : null}
+                </section>
+
+                <section className="space-y-3 rounded-2xl border border-white/10 bg-black/20 p-4">
+                  <div>
+                    <h3 className="text-sm font-semibold text-white">Tags</h3>
+                    <p className="text-xs text-slate-400">Single-add/remove API. Parent tags are not materialized automatically.</p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {data.tags.length > 0 ? data.tags.map((tag) => (
+                      <button
+                        key={tag.id}
+                        type="button"
+                        onClick={() => removeTagMutation.mutate(tag.id)}
+                        disabled={removeTagMutation.isPending}
+                        className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-slate-200 transition hover:border-rose-400/40 hover:text-rose-200 disabled:opacity-60"
+                        title="Click to remove explicit tag"
+                      >
+                        {tag.path} ×
+                      </button>
+                    )) : <p className="text-xs text-slate-500">No explicit tags.</p>}
+                  </div>
+                  <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto]">
+                    <select
+                      value={selectedTagId}
+                      onChange={(event) => setSelectedTagId(event.target.value)}
+                      className="min-w-0 rounded-2xl border border-white/10 bg-black/20 px-3 py-2 text-xs text-white outline-none focus:border-cyan-400/50"
+                    >
+                      <option value="">Select tag to add</option>
+                      {sortedTags.map((tag) => (
+                        <option key={tag.id} value={tag.id}>{tag.path}</option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => addTagMutation.mutate()}
+                      disabled={!selectedTagId || addTagMutation.isPending}
+                      className="rounded-2xl border border-cyan-400/30 bg-cyan-400/10 px-3 py-2 text-xs text-cyan-200 transition hover:bg-cyan-400/20 disabled:opacity-60"
+                    >
+                      Add tag
+                    </button>
+                  </div>
                 </section>
 
                 {showFaces && faces.length > 0 ? (
