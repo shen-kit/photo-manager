@@ -16,6 +16,15 @@ from app.services.faces.service import FaceProcessingService
 from app.services.jobs.service import JobService
 from app.services.people.repository import PeopleRepository
 from app.services.people.thumbnails import PersonThumbnailService
+from app.services.processing_dag import (
+    AssetProcessingDagService,
+    NODE_CLIP_EMBEDDING,
+    NODE_FACE_PROCESSING,
+    NODE_IMAGE_PREVIEW,
+    NODE_SMALL_THUMBNAIL,
+    NODE_TINY_THUMBNAIL,
+    NODE_VIDEO_PREVIEW,
+)
 from app.services.system_integrity.definitions import (
     CHECK_ASSET_DERIVATIVES,
     CHECK_CLIP_EMBEDDINGS,
@@ -186,12 +195,24 @@ def _repair_item(session: Session, repair_job_key: str, item) -> bool:
 def _repair_clip_embedding(session: Session, asset_id: UUID | None) -> bool:
     if asset_id is None:
         return False
+    dag = AssetProcessingDagService(session)
+    asset = dag.state.get_asset(asset_id)
+    if asset is None:
+        return False
+    if not dag.evaluate(asset=asset, task=NODE_CLIP_EMBEDDING).needs_processing:
+        return False
     result = EmbeddingService(session).generate_for_asset(asset_id, force=False)
     return result.generated
 
 
 def _repair_face_processing(session: Session, asset_id: UUID | None) -> bool:
     if asset_id is None:
+        return False
+    dag = AssetProcessingDagService(session)
+    asset = dag.state.get_asset(asset_id)
+    if asset is None:
+        return False
+    if not dag.evaluate(asset=asset, task=NODE_FACE_PROCESSING).needs_processing:
         return False
     result = FaceProcessingService(session).process_asset_faces(asset_id, force=False)
     return result.processed
@@ -203,26 +224,27 @@ def _repair_asset_derivatives(session: Session, asset_id: UUID | None) -> bool:
     asset = session.get(Asset, asset_id)
     if asset is None or asset.deleted_at is not None:
         return False
-    asset_dir = processed_asset_dir(asset.id)
-    missing_before: list[str] = []
-    if not (asset_dir / "tiny.webp").is_file():
-        missing_before.append("tiny")
-    if not (asset_dir / "small.webp").is_file():
-        missing_before.append("small")
-    if asset.has_large_preview and not (asset_dir / "large.webp").is_file():
-        missing_before.append("large")
-    if asset.media_kind == "video" and not processed_video_preview_path(asset.id).is_file():
-        missing_before.append("video_preview")
-    if not missing_before:
+    dag = AssetProcessingDagService(session)
+    needed = {
+        task: dag.evaluate(asset=asset, task=task).needs_processing
+        for task in (
+            NODE_TINY_THUMBNAIL,
+            NODE_SMALL_THUMBNAIL,
+            NODE_IMAGE_PREVIEW,
+            NODE_VIDEO_PREVIEW,
+        )
+    }
+    if not any(needed.values()):
         return False
+    asset_dir = processed_asset_dir(asset.id)
     repaired = False
     ThumbnailBatchProcessor(session).ensure_asset_thumbnails(asset_id)
-    if asset.media_kind == "video":
+    if needed[NODE_VIDEO_PREVIEW]:
         preview_path = processed_video_preview_path(asset.id)
         if not preview_path.is_file():
             AssetPreviewService(session).generate_video_preview(asset.id)
             repaired = True
-    elif asset.has_large_preview:
+    elif needed[NODE_IMAGE_PREVIEW]:
         preview_path = asset_dir / "large.webp"
         if not preview_path.is_file():
             AssetPreviewService(session).generate_image_preview(asset.id)

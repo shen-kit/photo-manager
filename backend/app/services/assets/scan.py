@@ -32,6 +32,7 @@ from app.services.assets.media import (
 from app.services.jobs.service import JobService
 from app.services.notifications.service import NotificationService
 from app.services.notifications.types import NotificationCategory, NotificationLevel
+from app.services.processing_dag import AssetProcessingDagService
 
 logger = logging.getLogger(__name__)
 SCAN_BATCH_SIZE = 50
@@ -117,6 +118,7 @@ async def _process_batch(batch: list[Path], job_id: UUID) -> ScanStats:
 
     with Session(engine) as session:
         thumbnail_processor = ThumbnailBatchProcessor(session)
+        dag = AssetProcessingDagService(session)
         for path in batch:
             stats = stats.add(ScanStats(files_seen=1))
             mime_type = guess_mime_type(path)
@@ -145,11 +147,14 @@ async def _process_batch(batch: list[Path], job_id: UUID) -> ScanStats:
             ).first()
             if existing_asset is not None:
                 stats = stats.add(ScanStats(duplicates_skipped=1))
-                thumbnail_items.append(BatchProcessingItem(asset_id=existing_asset.id))
-                embedding_items.append(
-                    {"asset_id": str(existing_asset.id), "job_id": None}
-                )
-                if not is_supported_video_mime_type(existing_asset.mime_type):
+                plan = dag.plan_scan_asset(existing_asset.id)
+                if plan.require_tiny_thumbnail or plan.require_small_thumbnail:
+                    thumbnail_items.append(BatchProcessingItem(asset_id=existing_asset.id))
+                if plan.queue_clip:
+                    embedding_items.append(
+                        {"asset_id": str(existing_asset.id), "job_id": None}
+                    )
+                if plan.queue_faces:
                     face_items.append(
                         {"asset_id": str(existing_asset.id), "job_id": None}
                     )
@@ -194,9 +199,12 @@ async def _process_batch(batch: list[Path], job_id: UUID) -> ScanStats:
                 stats = stats.add(ScanStats(duplicates_skipped=1))
                 continue
 
-            thumbnail_items.append(BatchProcessingItem(asset_id=asset.id))
-            embedding_items.append({"asset_id": str(asset.id), "job_id": None})
-            if not is_supported_video_mime_type(asset.mime_type):
+            plan = dag.plan_scan_asset(asset.id)
+            if plan.require_tiny_thumbnail or plan.require_small_thumbnail:
+                thumbnail_items.append(BatchProcessingItem(asset_id=asset.id))
+            if plan.queue_clip:
+                embedding_items.append({"asset_id": str(asset.id), "job_id": None})
+            if plan.queue_faces:
                 face_items.append({"asset_id": str(asset.id), "job_id": None})
             stats = stats.add(
                 ScanStats(

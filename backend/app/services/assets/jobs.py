@@ -26,9 +26,13 @@ from app.services.assets.preview import AssetPreviewService
 from app.services.assets.preview import IMAGE_PREVIEW_TASK, VIDEO_PREVIEW_TASK
 from app.services.assets.timeline import apply_asset_timeline_fields
 from app.services.jobs.context import JobNotification, JobTaskContext
-from app.services.jobs.queue import enqueue_asset_embedding_job, enqueue_asset_faces_job
 from app.services.notifications.types import NotificationCategory, NotificationLevel
 from app.services.asset_processing.service import AssetProcessingTrackerService
+from app.services.processing_dag import (
+    AssetProcessingDagService,
+    NODE_METADATA_REFRESH,
+    ProcessingPolicy,
+)
 
 EXIF_DATETIME_TAGS = ("36867", "306")
 EXIF_OFFSET_TAGS = ("36881", "36880", "36882")
@@ -86,7 +90,15 @@ async def process_asset_metadata(
     with Session(engine) as session:
         job_context = JobTaskContext(session, job_id=job_uuid)
         thumbnail_processor = ThumbnailBatchProcessor(session)
+        tracker = AssetProcessingTrackerService(session)
+        dag = AssetProcessingDagService(session)
         job_context.mark_running("Processing asset metadata")
+        tracker.mark_running(
+            asset_id=asset_uuid,
+            ai_model_id=None,
+            task=NODE_METADATA_REFRESH,
+            job_id=job_uuid,
+        )
         asset = session.get(Asset, asset_uuid)
         if asset is None:
             job_context.fail(
@@ -142,22 +154,35 @@ async def process_asset_metadata(
                     related_asset_id=asset_uuid,
                 ),
             )
+            tracker.mark_failed(
+                asset_id=asset_uuid,
+                ai_model_id=None,
+                task=NODE_METADATA_REFRESH,
+                job_id=job_uuid,
+                error_message=str(exc),
+            )
             return
 
-        queued_embedding_job = False
-        queued_face_job = False
-        if enqueue_embedding:
-            queued_embedding_job = await enqueue_asset_embedding_job(asset.id)
-        if enqueue_faces and is_supported_image_mime_type(asset.mime_type):
-            queued_face_job = await enqueue_asset_faces_job(asset.id)
+        dag.mark_metadata_refresh_completed(asset=asset, job_id=job_uuid)
+        dag.mark_thumbnail_nodes_completed(asset=asset, job_id=job_uuid)
+        follow_up = await dag.schedule_metadata_follow_up(
+            asset.id,
+            enqueue_embedding=enqueue_embedding,
+            enqueue_faces=enqueue_faces,
+            policy=ProcessingPolicy(
+                name="metadata_follow_up",
+                intent="metadata",
+                auto_match=True,
+            ),
+        )
         job_context.complete(
             "Asset metadata processed",
             result={
                 "asset_id": asset_id,
                 "processed": True,
                 "skipped": False,
-                "queued_embedding_job": queued_embedding_job,
-                "queued_face_job": queued_face_job,
+                "queued_embedding_job": follow_up.queued_embedding_job,
+                "queued_face_job": follow_up.queued_face_job,
             },
         )
 

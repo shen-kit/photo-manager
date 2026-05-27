@@ -12,13 +12,9 @@ from app.models import Asset, Job, Person
 from app.services.ai_models.repository import (
     AI_MODEL_TASK_CLIP_EMBEDDING,
     AI_MODEL_TASK_FACE_RECOGNITION,
-    AIModelConfigurationError,
     AIModelRepository,
 )
 from app.services.asset_processing.service import AssetProcessingTrackerService
-from app.services.assets.media import (
-    processed_asset_dir,
-)
 from app.services.assets.scan import scan_originals_library
 from app.services.assets.storage_rules import StorageRulesService
 from app.services.embeddings.service import EmbeddingService
@@ -47,15 +43,7 @@ from app.services.people_clustering.service import (
     CLUSTER_TOP_K,
 )
 from app.services.people_clustering.tasks import cluster_faces
-
-
-def _asset_missing_processed_files(asset: Asset) -> bool:
-    asset_dir = processed_asset_dir(asset.id)
-    if not (asset_dir / "tiny.webp").is_file():
-        return True
-    if not (asset_dir / "small.webp").is_file():
-        return True
-    return False
+from app.services.processing_dag import AssetProcessingDagService
 
 
 @dataclass(frozen=True)
@@ -309,6 +297,7 @@ class RegenerateMissingAssetThumbnailsManualJobHandler(ManualJobHandler):
     )
 
     def _candidate_assets(self) -> list[Asset]:
+        dag = AssetProcessingDagService(self.session)
         assets = list(
             self.session.exec(
                 select(Asset)
@@ -316,7 +305,12 @@ class RegenerateMissingAssetThumbnailsManualJobHandler(ManualJobHandler):
                 .order_by(Asset.created_at.asc(), Asset.id.asc())
             ).all()
         )
-        return [asset for asset in assets if _asset_missing_processed_files(asset)]
+        candidates: list[Asset] = []
+        for asset in assets:
+            plan = dag.plan_scan_asset(asset.id)
+            if plan.require_tiny_thumbnail or plan.require_small_thumbnail:
+                candidates.append(asset)
+        return candidates
 
     def count_candidates(self, payload: dict[str, Any]) -> int:
         del payload
@@ -586,8 +580,22 @@ class RunMissingOrOutdatedClipEmbeddingsManualJobHandler(ManualJobHandler):
         self.ai_model_repository = AIModelRepository(session)
         self.tracker = AssetProcessingTrackerService(session)
 
-    def _candidate_asset_ids(self) -> tuple[int, list[UUID]]:
-        return self.embedding_service.list_missing_asset_ids(force=False)
+    def _candidate_asset_ids(self, *, force: bool) -> tuple[int, list[UUID]]:
+        model_id, asset_ids = self.embedding_service.list_missing_asset_ids(force=force)
+        dag = AssetProcessingDagService(self.session)
+        filtered: list[UUID] = []
+        for asset_id in asset_ids:
+            asset = dag.state.get_asset(asset_id)
+            if asset is None:
+                continue
+            node = dag.evaluate(
+                asset=asset,
+                task=AI_MODEL_TASK_CLIP_EMBEDDING,
+                force=force,
+            )
+            if force or node.needs_processing:
+                filtered.append(asset_id)
+        return model_id, filtered
 
     def validate_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         normalized = super().validate_payload(payload)
@@ -595,7 +603,7 @@ class RunMissingOrOutdatedClipEmbeddingsManualJobHandler(ManualJobHandler):
 
     def prepare_run(self, payload: dict[str, Any]) -> ManualJobPreparedRun:
         force = bool(payload.get("force", False))
-        _, asset_ids = self.embedding_service.list_missing_asset_ids(force=force)
+        _, asset_ids = self._candidate_asset_ids(force=force)
         return ManualJobPreparedRun(
             payload={"force": force},
             progress_total=len(asset_ids),
@@ -604,7 +612,7 @@ class RunMissingOrOutdatedClipEmbeddingsManualJobHandler(ManualJobHandler):
 
     def count_candidates(self, payload: dict[str, Any]) -> int:
         force = bool(payload.get("force", False))
-        _, asset_ids = self.embedding_service.list_missing_asset_ids(force=force)
+        _, asset_ids = self._candidate_asset_ids(force=force)
         return len(asset_ids)
 
     async def run_parent_job(
@@ -629,7 +637,16 @@ class RunMissingOrOutdatedClipEmbeddingsManualJobHandler(ManualJobHandler):
         clip_model = self.ai_model_repository.get_default_model_for_task(
             AI_MODEL_TASK_CLIP_EMBEDDING
         )
+        dag = AssetProcessingDagService(self.session)
         for asset_id in asset_ids:
+            asset = dag.state.get_asset(asset_id)
+            if asset is None:
+                continue
+            if not force and not dag.evaluate(
+                asset=asset,
+                task=AI_MODEL_TASK_CLIP_EMBEDDING,
+            ).needs_processing:
+                continue
             existing_child = self.job_service.get_child_job_for_asset(
                 parent_job_id=parent_job.id,
                 related_asset_id=asset_id,
@@ -758,8 +775,30 @@ class RunMissingOrOutdatedFaceRecognitionManualJobHandler(ManualJobHandler):
         self.ai_model_repository = AIModelRepository(session)
         self.tracker = AssetProcessingTrackerService(session)
 
-    def _candidate_asset_ids(self) -> tuple[int, list[UUID]]:
-        return self.face_service.list_asset_ids_pending_face_processing(force=False)
+    def _candidate_asset_ids(
+        self,
+        *,
+        force: bool,
+        auto_match: bool,
+    ) -> tuple[int, list[UUID]]:
+        model_id, asset_ids = self.face_service.list_asset_ids_pending_face_processing(
+            force=force
+        )
+        dag = AssetProcessingDagService(self.session)
+        filtered: list[UUID] = []
+        for asset_id in asset_ids:
+            asset = dag.state.get_asset(asset_id)
+            if asset is None:
+                continue
+            node = dag.evaluate(
+                asset=asset,
+                task=AI_MODEL_TASK_FACE_RECOGNITION,
+                force=force,
+                require_face_match=auto_match,
+            )
+            if force or node.needs_processing:
+                filtered.append(asset_id)
+        return model_id, filtered
 
     def validate_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         normalized = super().validate_payload(payload)
@@ -771,9 +810,7 @@ class RunMissingOrOutdatedFaceRecognitionManualJobHandler(ManualJobHandler):
     def prepare_run(self, payload: dict[str, Any]) -> ManualJobPreparedRun:
         force = bool(payload.get("force", False))
         auto_match = bool(payload.get("auto_match", False))
-        _, asset_ids = self.face_service.list_asset_ids_pending_face_processing(
-            force=force
-        )
+        _, asset_ids = self._candidate_asset_ids(force=force, auto_match=auto_match)
         return ManualJobPreparedRun(
             payload={"force": force, "auto_match": auto_match},
             progress_total=len(asset_ids),
@@ -782,9 +819,8 @@ class RunMissingOrOutdatedFaceRecognitionManualJobHandler(ManualJobHandler):
 
     def count_candidates(self, payload: dict[str, Any]) -> int:
         force = bool(payload.get("force", False))
-        _, asset_ids = self.face_service.list_asset_ids_pending_face_processing(
-            force=force
-        )
+        auto_match = bool(payload.get("auto_match", False))
+        _, asset_ids = self._candidate_asset_ids(force=force, auto_match=auto_match)
         return len(asset_ids)
 
     async def run_parent_job(
@@ -810,7 +846,17 @@ class RunMissingOrOutdatedFaceRecognitionManualJobHandler(ManualJobHandler):
         face_model = self.ai_model_repository.get_default_model_for_task(
             AI_MODEL_TASK_FACE_RECOGNITION
         )
+        dag = AssetProcessingDagService(self.session)
         for asset_id in asset_ids:
+            asset = dag.state.get_asset(asset_id)
+            if asset is None:
+                continue
+            if not force and not dag.evaluate(
+                asset=asset,
+                task=AI_MODEL_TASK_FACE_RECOGNITION,
+                require_face_match=auto_match,
+            ).needs_processing:
+                continue
             existing_child = self.job_service.get_child_job_for_asset(
                 parent_job_id=parent_job.id,
                 related_asset_id=asset_id,

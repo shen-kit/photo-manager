@@ -19,6 +19,7 @@ from app.services.face_assignment.service import (
 from app.services.faces.service import FaceProcessingService, FaceProcessingServiceError
 from app.services.jobs.context import JobNotification, JobTaskContext
 from app.services.notifications.types import NotificationCategory, NotificationLevel
+from app.services.processing_dag import AssetProcessingDagService
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,11 @@ async def process_asset_faces(
                 assignment_result = FaceAssignmentService(
                     session
                 ).assign_faces_for_asset(asset_uuid)
+                AssetProcessingDagService(session).mark_face_matching_completed(
+                    asset_id=asset_uuid,
+                    output_count=assignment_result.faces_matched,
+                    job_id=job_uuid,
+                )
         except (FaceProcessingServiceError, FaceAssignmentServiceError) as exc:
             logger.warning("Face processing failed for asset %s: %s", asset_uuid, exc)
             job_context.fail(
@@ -152,6 +158,11 @@ async def process_asset_faces_batch(
                     assignment_result = FaceAssignmentService(
                         session
                     ).assign_faces_for_asset(item.asset_id)
+                    AssetProcessingDagService(session).mark_face_matching_completed(
+                        asset_id=item.asset_id,
+                        output_count=assignment_result.faces_matched,
+                        job_id=item.job_id,
+                    )
                 if face_model is not None:
                     tracker.mark_completed(
                         asset_id=item.asset_id,

@@ -33,6 +33,11 @@ from app.services.jobs.dispatcher import (
     preview_dedup_key,
 )
 from app.services.jobs.service import JobService
+from app.services.processing_dag import (
+    AssetProcessingDagService,
+    NODE_IMAGE_PREVIEW,
+    NODE_VIDEO_PREVIEW,
+)
 
 logger = logging.getLogger(__name__)
 PREVIEW_JOB_KEY = "generate_asset_preview"
@@ -274,6 +279,17 @@ class AssetPreviewService:
             if is_supported_video_mime_type(asset.mime_type)
             else IMAGE_PREVIEW_TASK
         )
+        dag_task = (
+            NODE_VIDEO_PREVIEW
+            if is_supported_video_mime_type(asset.mime_type)
+            else NODE_IMAGE_PREVIEW
+        )
+        dag_state = AssetProcessingDagService(self.session).evaluate(
+            asset=asset,
+            task=dag_task,
+        )
+        if not dag_state.needs_processing:
+            return None
         try:
             dispatch = await JobDispatcher(self.session).dispatch(
                 job_name=GENERATE_ASSET_PREVIEW_JOB_NAME,

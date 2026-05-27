@@ -155,9 +155,9 @@ class FaceProcessingService:
         except FaceDetectionError as exc:
             raise FaceProcessingServiceError(str(exc)) from exc
 
-        confirmed_boxes = {
+        protected_boxes = {
             self._bounding_box_key(box)
-            for box in self.repository.list_confirmed_bounding_boxes(
+            for box in self.repository.list_protected_bounding_boxes(
                 asset_id=asset.id,
                 model_id=face_model.id,
             )
@@ -166,7 +166,7 @@ class FaceProcessingService:
             face
             for face in detected_faces
             if self._bounding_box_key(self._bounding_box_dict(face))
-            not in confirmed_boxes
+            not in protected_boxes
         ]
 
         deleted_unconfirmed_faces = 0

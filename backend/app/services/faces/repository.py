@@ -66,11 +66,27 @@ class FaceRepository:
             box for box in self.session.exec(statement).all() if isinstance(box, dict)
         ]
 
+    def list_protected_bounding_boxes(
+        self,
+        *,
+        asset_id: UUID,
+        model_id: int,
+    ) -> list[dict[str, Any]]:
+        statement = select(Face.bounding_box).where(
+            Face.asset_id == asset_id,
+            Face.face_model_id == model_id,
+            Face.is_confirmed.is_(True) | Face.is_excluded.is_(True),
+        )
+        return [
+            box for box in self.session.exec(statement).all() if isinstance(box, dict)
+        ]
+
     def delete_unconfirmed_faces(self, *, asset_id: UUID, model_id: int) -> int:
         statement = delete(Face).where(
             Face.asset_id == asset_id,
             Face.face_model_id == model_id,
             Face.is_confirmed.is_(False),
+            Face.is_excluded.is_(False),
         )
         result = self.session.exec(statement)
         self.session.commit()

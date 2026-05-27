@@ -30,11 +30,13 @@ class _FakeFaceRepository:
         total_existing: int = 0,
         confirmed_existing: int = 0,
         confirmed_boxes: list[dict[str, int]] | None = None,
+        protected_boxes: list[dict[str, int]] | None = None,
     ) -> None:
         self.asset = asset
         self.total_existing = total_existing
         self.confirmed_existing = confirmed_existing
         self.confirmed_boxes = confirmed_boxes or []
+        self.protected_boxes = protected_boxes or list(self.confirmed_boxes)
         self.deleted_unconfirmed_calls: list[tuple[str, int]] = []
         self.inserted_faces = []
 
@@ -49,6 +51,10 @@ class _FakeFaceRepository:
 
     def list_confirmed_bounding_boxes(self, *, asset_id, model_id):
         return list(self.confirmed_boxes)
+
+    def list_protected_bounding_boxes(self, *, asset_id, model_id):
+        del asset_id, model_id
+        return list(self.protected_boxes)
 
     def delete_unconfirmed_faces(self, *, asset_id, model_id):
         self.deleted_unconfirmed_calls.append((str(asset_id), model_id))
@@ -177,6 +183,7 @@ class FaceProcessingServiceTest(unittest.TestCase):
                 total_existing=2,
                 confirmed_existing=1,
                 confirmed_boxes=[confirmed_box],
+                protected_boxes=[confirmed_box],
             )
             service = FaceProcessingService(
                 session=None,
@@ -201,6 +208,89 @@ class FaceProcessingServiceTest(unittest.TestCase):
         self.assertEqual(result.faces_created, 1)
         self.assertEqual(len(repo.inserted_faces), 1)
         self.assertEqual(repo.inserted_faces[0].bounding_box["x"], 30)
+
+    def test_force_true_preserves_manually_assigned_confirmed_face(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            image_path = Path(tmp_dir) / "photo.jpg"
+            image_path.write_bytes(b"stub")
+            asset = self._asset(image_path)
+            assigned_box = {
+                "x": 8,
+                "y": 9,
+                "width": 10,
+                "height": 12,
+                "image_width": 100,
+                "image_height": 80,
+            }
+            repo = _FakeFaceRepository(
+                asset=asset,
+                total_existing=1,
+                confirmed_existing=1,
+                confirmed_boxes=[assigned_box],
+                protected_boxes=[assigned_box],
+            )
+            service = FaceProcessingService(
+                session=None,
+                repository=repo,
+                asset_processing_repository=_FakeAssetProcessingRepository(),
+                ai_model_repository=_FakeAIModelRepository(self._model()),
+                detector=lambda path: [self._face(8, 9), self._face(20, 30)],
+            )
+
+            from unittest.mock import patch
+
+            with patch(
+                "app.services.faces.service.master_path_to_source_path",
+                return_value=image_path,
+            ):
+                result = service.process_asset_faces(asset.id, force=True)
+
+        self.assertTrue(result.processed)
+        self.assertEqual(result.faces_created, 1)
+        self.assertEqual(len(repo.inserted_faces), 1)
+        self.assertEqual(repo.inserted_faces[0].bounding_box["x"], 20)
+
+    def test_force_true_preserves_excluded_faces_and_does_not_recreate_them(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            image_path = Path(tmp_dir) / "photo.jpg"
+            image_path.write_bytes(b"stub")
+            asset = self._asset(image_path)
+            excluded_box = {
+                "x": 12,
+                "y": 14,
+                "width": 10,
+                "height": 12,
+                "image_width": 100,
+                "image_height": 80,
+            }
+            repo = _FakeFaceRepository(
+                asset=asset,
+                total_existing=1,
+                confirmed_existing=0,
+                protected_boxes=[excluded_box],
+            )
+            service = FaceProcessingService(
+                session=None,
+                repository=repo,
+                asset_processing_repository=_FakeAssetProcessingRepository(),
+                ai_model_repository=_FakeAIModelRepository(self._model()),
+                detector=lambda path: [self._face(12, 14), self._face(40, 25)],
+            )
+
+            from unittest.mock import patch
+
+            with patch(
+                "app.services.faces.service.master_path_to_source_path",
+                return_value=image_path,
+            ):
+                result = service.process_asset_faces(asset.id, force=True)
+
+        self.assertTrue(result.processed)
+        self.assertEqual(result.faces_created, 1)
+        self.assertEqual(len(repo.inserted_faces), 1)
+        self.assertEqual(repo.inserted_faces[0].bounding_box["x"], 40)
 
     def test_force_true_skips_when_only_confirmed_faces_exist(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

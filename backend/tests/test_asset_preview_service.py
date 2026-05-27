@@ -139,6 +139,25 @@ class AssetPreviewServiceTest(unittest.TestCase):
         self.assertEqual(items[0].status, "not_found")
         self.assertIsNone(items[0].preview_url)
 
+    def test_preview_job_is_skipped_when_dag_state_is_already_satisfied(self) -> None:
+        asset = self._asset(has_large_preview=True)
+        session = _FakeSession(asset)
+        service = AssetPreviewService(session)
+
+        with patch(
+            "app.services.assets.preview.AssetProcessingDagService"
+        ) as dag_cls:
+            dag_cls.return_value.evaluate.return_value = type(
+                "State",
+                (),
+                {"needs_processing": False},
+            )()
+            job = self._run_async(
+                service._ensure_preview_job(asset=asset, priority="low")
+            )
+
+        self.assertIsNone(job)
+
     @staticmethod
     def _run_async(awaitable):
         import asyncio

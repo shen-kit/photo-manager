@@ -13,12 +13,29 @@ class _FakeSession:
     def __init__(self) -> None:
         self.added: list[object] = []
         self.commit_count = 0
+        self.refreshed: list[object] = []
 
     def add(self, value) -> None:
         self.added.append(value)
 
     def commit(self) -> None:
         self.commit_count += 1
+
+    def refresh(self, value) -> None:
+        self.refreshed.append(value)
+
+    def rollback(self) -> None:
+        return None
+
+    def exec(self, statement):
+        del statement
+
+        class _Result:
+            @staticmethod
+            def first():
+                return None
+
+        return _Result()
 
 
 class AssetServiceTest(unittest.TestCase):
@@ -53,6 +70,50 @@ class AssetServiceTest(unittest.TestCase):
         maintenance.reconcile_people.assert_called_once_with(
             person_ids=impacted_person_ids
         )
+
+    def test_process_new_asset_uses_dag_entrypoint_for_new_asset(self) -> None:
+        session = _FakeSession()
+        service = AssetService(session=session)
+        source_path = Mock()
+        source_path.stat.return_value.st_size = 1234
+
+        with (
+            patch.object(
+                service,
+                "resolve_original_path",
+                return_value=("2026/05/photo.jpg", source_path),
+            ),
+            patch("app.services.assets.service.guess_mime_type", return_value="image/jpeg"),
+            patch("app.services.assets.service.compute_sha256", return_value="hash"),
+            patch.object(
+                service,
+                "_inspect_media_or_raise",
+                return_value=(800, 600, None),
+            ),
+            patch.object(
+                service,
+                "_ensure_canonical_original_location",
+                return_value=("2026/05/photo.jpg", source_path),
+            ),
+            patch("app.services.assets.service.AssetProcessingDagService") as dag_cls,
+            patch("app.services.assets.service.should_generate_large_preview", return_value=False),
+            patch("app.services.assets.service.is_supported_image_mime_type", return_value=False),
+            patch("app.services.assets.service.is_supported_video_mime_type", return_value=False),
+        ):
+            dag_cls.return_value.schedule_asset_created = Mock()
+            async def _scheduled(asset_id):
+                del asset_id
+                return True
+            dag_cls.return_value.schedule_asset_created.side_effect = _scheduled
+            result = self._run_async(service.process_new_asset("ignored", uuid4()))
+
+        self.assertTrue(result.queued_job)
+
+    @staticmethod
+    def _run_async(awaitable):
+        import asyncio
+
+        return asyncio.run(awaitable)
 
 
 if __name__ == "__main__":

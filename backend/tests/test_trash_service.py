@@ -21,6 +21,7 @@ from app.services.ai_models.repository import (
     AI_MODEL_TASK_FACE_RECOGNITION,
 )
 from app.services.face_assignment.service import FaceAssignmentResult
+from app.services.processing_dag import ProcessingFollowUpResult
 from app.services.trash.service import TrashService
 
 
@@ -147,27 +148,17 @@ class TrashServiceTest(unittest.TestCase):
                     return_value=source_path,
                 ),
                 patch(
-                    "app.services.trash.service.FaceAssignmentService.assign_faces_for_asset",
-                    return_value=FaceAssignmentResult(
-                        asset_id=asset.id,
-                        faces_seen=2,
-                        faces_matched=1,
-                        faces_unmatched=1,
-                        assignments=[],
+                    "app.services.trash.service.AssetProcessingDagService.schedule_restore_follow_up",
+                    new=AsyncMock(
+                        return_value=ProcessingFollowUpResult(
+                            queued_metadata_job=False,
+                            queued_embedding_job=True,
+                            queued_face_job=False,
+                            ran_face_matching=True,
+                            matched_faces=1,
+                        )
                     ),
-                ) as match_mock,
-                patch(
-                    "app.services.trash.service.enqueue_asset_embedding_job",
-                    new=AsyncMock(return_value=True),
-                ) as embedding_mock,
-                patch(
-                    "app.services.trash.service.enqueue_asset_faces_job",
-                    new=AsyncMock(return_value=True),
-                ) as face_job_mock,
-                patch(
-                    "app.services.trash.service.enqueue_asset_processing_job",
-                    new=AsyncMock(return_value=False),
-                ) as metadata_mock,
+                ) as follow_up_mock,
             ):
                 result = asyncio.run(service.restore_asset(asset.id))
 
@@ -177,10 +168,7 @@ class TrashServiceTest(unittest.TestCase):
             service.people_maintenance.restore_calls,
             [str(asset.id)],
         )
-        match_mock.assert_called_once_with(asset.id)
-        embedding_mock.assert_awaited_once_with(asset.id)
-        face_job_mock.assert_not_awaited()
-        metadata_mock.assert_awaited_once()
+        follow_up_mock.assert_awaited_once_with(asset.id)
         self.assertTrue(result.jobs.ran_face_matching)
         self.assertEqual(result.jobs.matched_faces, 1)
         self.assertTrue(result.jobs.queued_embedding_job)
@@ -207,17 +195,21 @@ class TrashServiceTest(unittest.TestCase):
                     return_value=source_path,
                 ),
                 patch(
-                    "app.services.trash.service.TrashService._asset_needs_metadata_refresh",
-                    return_value=False,
-                ),
-                patch(
-                    "app.services.trash.service.enqueue_asset_faces_job",
-                    new=AsyncMock(return_value=True),
-                ) as face_job_mock,
+                    "app.services.trash.service.AssetProcessingDagService.schedule_restore_follow_up",
+                    new=AsyncMock(
+                        return_value=ProcessingFollowUpResult(
+                            queued_metadata_job=False,
+                            queued_embedding_job=False,
+                            queued_face_job=True,
+                            ran_face_matching=False,
+                            matched_faces=0,
+                        )
+                    ),
+                ) as follow_up_mock,
             ):
                 result = asyncio.run(service.restore_asset(asset.id))
 
-        face_job_mock.assert_awaited_once_with(asset.id, force=False, auto_match=True)
+        follow_up_mock.assert_awaited_once_with(asset.id)
         self.assertFalse(result.jobs.ran_face_matching)
         self.assertTrue(result.jobs.queued_face_job)
         self.assertFalse(result.jobs.queued_embedding_job)

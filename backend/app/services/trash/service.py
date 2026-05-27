@@ -30,12 +30,8 @@ from app.services.face_assignment.service import (
     FaceAssignmentService,
 )
 from app.services.faces.repository import FaceRepository
-from app.services.jobs.queue import (
-    enqueue_asset_embedding_job,
-    enqueue_asset_faces_job,
-    enqueue_asset_processing_job,
-)
 from app.services.people.maintenance import PeopleMaintenanceService
+from app.services.processing_dag import AssetProcessingDagService
 from app.services.trash.schemas import TrashSort
 
 
@@ -236,43 +232,16 @@ class TrashService:
         asset: Asset,
         source_path: Path,
     ) -> TrashRestoreJobResult:
-        queued_metadata_job = False
-        queued_embedding_job = False
-        queued_face_job = False
-        ran_face_matching = False
-        matched_faces = 0
-
-        if self._asset_needs_metadata_refresh(asset):
-            queued_metadata_job = await enqueue_asset_processing_job(
-                asset.id,
-                enqueue_embedding=False,
-                enqueue_faces=False,
-            )
-
-        if self._asset_needs_embedding(asset):
-            queued_embedding_job = await enqueue_asset_embedding_job(asset.id)
-
-        if is_supported_image_mime_type(asset.mime_type):
-            if self._asset_has_current_face_model_faces(asset.id):
-                assignment_result: FaceAssignmentResult = FaceAssignmentService(
-                    self.session
-                ).assign_faces_for_asset(asset.id)
-                ran_face_matching = True
-                matched_faces = assignment_result.faces_matched
-            else:
-                queued_face_job = await enqueue_asset_faces_job(
-                    asset.id,
-                    force=False,
-                    auto_match=True,
-                )
-
+        follow_up = await AssetProcessingDagService(self.session).schedule_restore_follow_up(
+            asset.id
+        )
         del source_path
         return TrashRestoreJobResult(
-            queued_metadata_job=queued_metadata_job,
-            queued_embedding_job=queued_embedding_job,
-            queued_face_job=queued_face_job,
-            ran_face_matching=ran_face_matching,
-            matched_faces=matched_faces,
+            queued_metadata_job=follow_up.queued_metadata_job,
+            queued_embedding_job=follow_up.queued_embedding_job,
+            queued_face_job=follow_up.queued_face_job,
+            ran_face_matching=follow_up.ran_face_matching,
+            matched_faces=follow_up.matched_faces,
         )
 
     def _asset_has_current_face_model_faces(self, asset_id: UUID) -> bool:

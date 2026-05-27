@@ -41,13 +41,12 @@ from app.services.assets.media import (
     source_path_to_master_path,
     validate_supported_media,
 )
-from app.services.jobs.queue import enqueue_asset_processing_job
-from app.services.jobs.service import JobService
 from app.services.notifications.service import NotificationService
 from app.services.notifications.types import NotificationCategory, NotificationLevel
 from app.services.assets.timeline import apply_asset_timeline_fields
 from app.services.people.maintenance import PeopleMaintenanceService
 from app.services.people.repository import PeopleRepository
+from app.services.processing_dag import AssetProcessingDagService
 
 logger = logging.getLogger(__name__)
 
@@ -318,7 +317,9 @@ class AssetService:
                 self.session.add(existing_asset)
                 self.session.commit()
                 self.session.refresh(existing_asset)
-                queued_job = await enqueue_asset_processing_job(existing_asset.id)
+                queued_job = await AssetProcessingDagService(
+                    self.session
+                ).schedule_asset_created(existing_asset.id)
             self._cleanup_duplicate_source(source_path, existing_asset.master_path)
             return AssetProcessResult(
                 asset=existing_asset, queued_job=queued_job, created_new=False
@@ -380,7 +381,9 @@ class AssetService:
                 self.session.add(existing_asset)
                 self.session.commit()
                 self.session.refresh(existing_asset)
-                queued_job = await enqueue_asset_processing_job(existing_asset.id)
+                queued_job = await AssetProcessingDagService(
+                    self.session
+                ).schedule_asset_created(existing_asset.id)
             self._cleanup_duplicate_source(source_path, existing_asset.master_path)
             return AssetProcessResult(
                 asset=existing_asset, queued_job=queued_job, created_new=False
@@ -401,7 +404,9 @@ class AssetService:
                 self.background_tasks.add_task(
                     _generate_fast_artifacts, asset.id, source_path, include_small
                 )
-        queued_job = await enqueue_asset_processing_job(asset.id)
+        queued_job = await AssetProcessingDagService(self.session).schedule_asset_created(
+            asset.id
+        )
         return AssetProcessResult(asset=asset, queued_job=queued_job, created_new=True)
 
     def _get_active_asset_or_404(self, asset_id: UUID) -> Asset:
@@ -590,7 +595,9 @@ class AssetService:
                 self.background_tasks.add_task(
                     _generate_fast_artifacts, asset.id, source_path, include_small
                 )
-        queued_job = await enqueue_asset_processing_job(asset.id)
+        queued_job = await AssetProcessingDagService(self.session).schedule_asset_created(
+            asset.id
+        )
         return AssetProcessResult(asset=asset, queued_job=queued_job, created_new=False)
 
 
