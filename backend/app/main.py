@@ -36,12 +36,12 @@ app = FastAPI(title="Photo Manager API", lifespan=lifespan)
 app.include_router(api_v1_router, prefix="/api/v1")
 app.mount(
     "/media/originals",
-    StaticFiles(directory=MEDIA_ORIGINALS_DIR),
+    StaticFiles(directory=MEDIA_ORIGINALS_DIR, check_dir=False),
     name="original-media",
 )
 app.mount(
     "/media/processed",
-    StaticFiles(directory=MEDIA_PROCESSED_DIR),
+    StaticFiles(directory=MEDIA_PROCESSED_DIR, check_dir=False),
     name="processed-media",
 )
 

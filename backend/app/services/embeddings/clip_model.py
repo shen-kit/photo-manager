@@ -5,6 +5,10 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import torch
 
 AI_CACHE_DIR = Path(os.getenv("AI_CACHE_DIR", "/tmp/ai-cache")).resolve()
 HF_HOME_DIR = AI_CACHE_DIR / "huggingface"
@@ -18,8 +22,6 @@ os.environ.setdefault("TRANSFORMERS_CACHE", str(HF_HOME_DIR / "transformers"))
 os.environ.setdefault("TORCH_HOME", str(TORCH_HOME_DIR))
 os.environ.setdefault("XDG_CACHE_HOME", str(AI_CACHE_DIR))
 
-import open_clip
-import torch
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 CLIP_DEVICE_PREFERENCE = os.getenv("CLIP_DEVICE", "auto").strip().lower()
@@ -35,13 +37,15 @@ class ClipEmbeddingError(RuntimeError):
 
 @dataclass(frozen=True)
 class ClipRuntime:
-    model: torch.nn.Module
+    model: Any
     preprocess: object
     tokenizer: object
     device: str
 
 
 def _resolve_device() -> str:
+    import torch
+
     if CLIP_DEVICE_PREFERENCE in {"cpu", "cuda"}:
         if CLIP_DEVICE_PREFERENCE == "cuda" and not torch.cuda.is_available():
             return "cpu"
@@ -64,6 +68,8 @@ def _ensure_cache_environment() -> str:
 
 @lru_cache(maxsize=8)
 def get_clip_runtime(model_name: str, pretrained: str) -> ClipRuntime:
+    import open_clip
+
     device = _resolve_device()
     architecture = resolve_openclip_architecture(model_name)
     cache_dir = _ensure_cache_environment()
@@ -84,7 +90,7 @@ def get_clip_runtime(model_name: str, pretrained: str) -> ClipRuntime:
 
 
 def _normalize_embedding(
-    tensor: torch.Tensor, *, expected_dimensions: int | None
+    tensor: "torch.Tensor", *, expected_dimensions: int | None
 ) -> list[float]:
     normalized = tensor / tensor.norm(dim=-1, keepdim=True).clamp_min(1e-12)
     embedding = normalized[0].detach().cpu().tolist()
@@ -102,6 +108,8 @@ def embed_image(
     pretrained: str,
     expected_dimensions: int | None,
 ) -> list[float]:
+    import torch
+
     runtime = get_clip_runtime(model_name, pretrained)
     try:
         with Image.open(path) as image:
@@ -127,6 +135,8 @@ def embed_text(
     pretrained: str,
     expected_dimensions: int | None,
 ) -> list[float]:
+    import torch
+
     runtime = get_clip_runtime(model_name, pretrained)
     text_input = runtime.tokenizer([query]).to(runtime.device)
     autocast_context = (

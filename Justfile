@@ -31,6 +31,12 @@ health:
 docs:
     @echo {{ api_url }}/docs
 
+openapi:
+    backend/.venv/bin/python backend/scripts/export_openapi.py
+
+openapi-check:
+    backend/.venv/bin/python backend/scripts/export_openapi.py --check
+
 register username="testuser" password="testpass123":
     curl -i -c cookies.txt -X POST {{ api_url }}/api/v1/auth/register \
       -H 'Content-Type: application/json' \

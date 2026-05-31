@@ -39,6 +39,7 @@ Self-hosted photo and video management with a database-first design, cursor-base
 - `worker-batch`: ARQ worker lanes for `ai`, `backfill`, and `maintenance`.
 - `api` also runs an internal executor for API-owned maintenance jobs that must mutate `storage/originals/`.
 - `web`: Next.js app in `web/`, currently a development/testing frontend run separately from `docker-compose.yml`.
+- OpenAPI schema: committed at `backend/openapi-schema.json`; regenerate with `just openapi`, check with `just openapi-check`. See `docs/openapi.md` for frontend client generation.
 
 ```mermaid
 flowchart LR

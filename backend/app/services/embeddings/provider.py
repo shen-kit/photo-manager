@@ -3,8 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Protocol
 
-from app.services.embeddings.clip_model import embed_image, embed_text
-
 
 class EmbeddingProvider(Protocol):
     def embed_image(
@@ -35,6 +33,8 @@ class OpenClipEmbeddingProvider:
         pretrained: str,
         expected_dimensions: int | None,
     ) -> list[float]:
+        from app.services.embeddings.clip_model import embed_image
+
         return embed_image(
             path,
             model_name=model_name,
@@ -50,6 +50,8 @@ class OpenClipEmbeddingProvider:
         pretrained: str,
         expected_dimensions: int | None,
     ) -> list[float]:
+        from app.services.embeddings.clip_model import embed_text
+
         return embed_text(
             query,
             model_name=model_name,
